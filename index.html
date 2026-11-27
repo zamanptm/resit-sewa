@@ -1,0 +1,2841 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sistem Resit &amp; Rekod Transaksi Sewa (Firebase)</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- html2pdf.js CDN untuk penjanaan fail PDF A4 tanpa watermark -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      overflow-x: clip;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      touch-action: manipulation;
+    }
+
+    /* Elak iOS/Safari auto-zoom & limpahan kotak input/tarikh di skrin telefon */
+    @media (max-width: 640px) {
+      input:not([type="checkbox"]), select, textarea {
+        font-size: 16px !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+      }
+    }
+
+    /* Helaian resit A4 (794x1122px pada 96dpi) untuk pratonton, cetakan & PDF */
+    .receipt-sheet {
+      width: 794px;
+      min-height: 1122px;
+      background-color: #ffffff;
+      color: #1e293b;
+      padding: 68px 64px 54px 64px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-sizing: border-box;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      position: relative;
+    }
+
+    /* Cop merah berbingkai & condong PAID */
+    .paid-stamp {
+      display: inline-block;
+      border: 4px solid #c81e1e;
+      border-radius: 8px;
+      padding: 8px 36px;
+      color: #c81e1e;
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: 7px;
+      line-height: 1.1;
+      transform: rotate(-7deg);
+      user-select: none;
+    }
+
+    /* Bekas skala automatik supaya resit A4 sentiasa muat skrin tanpa skrol melintang */
+    .preview-viewport {
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+      position: relative;
+      contain: layout;
+    }
+
+    .preview-scaler {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: top left;
+      will-change: transform;
+    }
+
+    /* Animasi notifikasi toast */
+    @keyframes slideInUp {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .toast-enter {
+      animation: slideInUp 0.25s ease-out forwards;
+    }
+
+    /* Bekas cetakan disembunyikan pada skrin biasa */
+    #print-only-container {
+      display: none;
+    }
+
+    /* Peraturan cetakan khas: hanya cetak helaian resit A4 */
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 0;
+      }
+      body {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+      #print-only-container {
+        display: block !important;
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0;
+        padding: 0;
+      }
+      #print-only-container .receipt-sheet {
+        width: 210mm !important;
+        min-height: 297mm !important;
+        box-shadow: none !important;
+        border: none !important;
+        margin: 0 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+  <!-- ===================================================================== -->
+  <!-- PAPARAN 0: SKRIN MUATAN (LOADING)                                     -->
+  <!-- ===================================================================== -->
+  <div id="view-loading" class="no-print min-h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-white">
+    <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center mb-4">
+      <svg class="w-6 h-6 text-emerald-300 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+      </svg>
+    </div>
+    <p class="text-sm font-bold tracking-wide">Menyemak sesi log masuk...</p>
+    <p class="text-xs text-slate-400 mt-1">Sila tunggu sebentar</p>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- PAPARAN 1: SKRIN LOG MASUK GOOGLE / GMAIL (FIREBASE AUTH)             -->
+  <!-- ===================================================================== -->
+  <div id="view-auth" class="no-print hidden min-h-screen flex items-center justify-center p-4 sm:p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div class="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200/80 overflow-hidden">
+      <!-- Kepala Kad Login -->
+      <div class="bg-slate-900 px-6 py-8 text-center text-white">
+        <div class="w-14 h-14 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center mx-auto mb-3.5">
+          <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h1 class="text-lg font-extrabold tracking-tight">Sistem Resit &amp; Rekod Transaksi Sewa</h1>
+        <p class="text-xs text-slate-300 mt-1.5">Log masuk menggunakan akaun Google (Gmail) yang dibenarkan</p>
+      </div>
+
+      <div class="p-6 sm:p-8 space-y-5">
+        <!-- Mesej Ralat Auth -->
+        <div id="auth-error-box" class="hidden rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-3 text-xs font-semibold text-rose-700 leading-relaxed"></div>
+
+        <!-- Butang Utama Log Masuk dengan Google (Gmail) -->
+        <button type="button" id="btn-google-signin"
+          class="w-full py-3.5 px-5 rounded-2xl bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 border-2 border-slate-200 hover:border-slate-300 text-sm font-bold shadow-sm transition-all flex items-center justify-center gap-3 disabled:opacity-60">
+          <!-- Ikon Rasmi Google -->
+          <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/>
+            <path fill="#34A853" d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"/>
+            <path fill="#FBBC05" d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"/>
+            <path fill="#EA4335" d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"/>
+          </svg>
+          <span id="btn-google-signin-text">Log Masuk dengan Google (Gmail)</span>
+        </button>
+
+        <div class="rounded-2xl bg-slate-50 border border-slate-200/80 p-4 text-[11px] text-slate-600 leading-relaxed space-y-1.5">
+          <p class="font-bold text-slate-800">Kawalan Akses Pintar:</p>
+          <p>• Pengguna Gmail pertama yang log masuk akan dilantik sebagai <strong class="text-slate-800">Admin</strong> secara automatik.</p>
+          <p>• Pengguna lain hanya boleh masuk selepas emel Gmail mereka ditambah oleh Admin dalam tab <em>Urus Akses</em>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- PAPARAN 2: SKRIN SEKATAN AKSES (EMEL TIADA DALAM WHITELIST)           -->
+  <!-- ===================================================================== -->
+  <div id="view-denied" class="no-print hidden min-h-screen flex items-center justify-center p-4 sm:p-6 bg-slate-100">
+    <div class="w-full max-w-md bg-white rounded-3xl shadow-xl border border-rose-200 p-7 text-center space-y-4">
+      <div class="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+      </div>
+      <h2 class="text-lg font-extrabold text-slate-900">Akses Disekat</h2>
+      <p class="text-sm text-slate-600 leading-relaxed">
+        Emel Gmail anda tiada dalam senarai pengguna yang dibenarkan. Sila hubungi Admin untuk menambah emel berikut ke dalam tab <strong>Urus Akses</strong>:
+      </p>
+      <div class="bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-xs font-mono font-bold text-slate-700 break-all" id="denied-email-display">
+        -
+      </div>
+      <button type="button" id="btn-denied-logout"
+        class="w-full py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold shadow-sm transition-colors">
+        Log Keluar / Tukar Akaun
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- PAPARAN 3: APLIKASI UTAMA (SELEPAS LOG MASUK & DISAHKAN)              -->
+  <!-- ===================================================================== -->
+  <div id="view-app" class="hidden flex-1 flex flex-col w-full max-w-full overflow-x-hidden">
+
+    <!-- KEPALA APLIKASI & NAVIGASI 4 TAB -->
+    <header class="no-print bg-slate-900 text-white lg:sticky lg:top-0 z-30 shadow-md w-full">
+      <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between py-3 gap-3">
+          <!-- Jenama & Tajuk -->
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center flex-shrink-0">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div class="min-w-0">
+                <h1 class="text-sm sm:text-base font-bold text-white leading-tight truncate">
+                  Sistem Resit &amp; Rekod Transaksi Sewa
+                </h1>
+                <p class="text-[11px] text-slate-300 truncate">
+                  Pangkalan Data Awan Masa Nyata • PDF A4 Tanpa Watermark
+                </p>
+              </div>
+            </div>
+
+            <!-- Butang Log Keluar (Mudah Alih) -->
+            <button type="button" class="btn-logout-action lg:hidden px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 text-rose-200 text-xs font-bold flex-shrink-0">
+              Log Keluar
+            </button>
+          </div>
+
+          <!-- Bar Navigasi Tab -->
+          <nav class="grid grid-cols-2 sm:flex sm:items-center gap-1.5 bg-slate-800/90 p-1.5 rounded-xl border border-slate-700/80 w-full lg:w-auto" aria-label="Navigasi Utama">
+            <button type="button" data-tab="create"
+              class="tab-btn flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all whitespace-nowrap bg-white text-slate-900 shadow-sm">
+              <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              <span>Cipta Resit</span>
+            </button>
+
+            <button type="button" data-tab="transactions"
+              class="tab-btn flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all whitespace-nowrap text-slate-300 hover:text-white">
+              <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+              <span>Transaksi</span>
+              <span id="nav-tx-count" class="px-1.5 py-0.5 text-[11px] rounded-full bg-emerald-500 text-white font-bold">0</span>
+            </button>
+
+            <button type="button" data-tab="profiles"
+              class="tab-btn flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all whitespace-nowrap text-slate-300 hover:text-white">
+              <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <span>Profil</span>
+            </button>
+
+            <!-- Tab 4: Urus Akses (Hanya untuk Admin) -->
+            <button type="button" id="nav-tab-access" data-tab="access"
+              class="tab-btn hidden flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all whitespace-nowrap text-slate-300 hover:text-white">
+              <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+              <span>Urus Akses</span>
+            </button>
+          </nav>
+
+          <!-- Maklumat Pengguna & Log Keluar (Desktop) -->
+          <div class="hidden lg:flex items-center gap-3">
+            <img id="header-user-photo" src="" alt="Profil" class="hidden w-9 h-9 rounded-full border border-slate-600 object-cover flex-shrink-0" />
+            <div id="header-user-avatar-fallback" class="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center text-xs font-extrabold flex-shrink-0">
+              U
+            </div>
+            <div class="text-right min-w-0">
+              <div class="flex items-center justify-end gap-1.5">
+                <p id="header-user-name" class="text-xs font-bold text-white max-w-[140px] truncate">Pengguna</p>
+                <span id="header-user-role" class="inline-block text-[10px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  Admin
+                </span>
+              </div>
+              <p id="header-user-email" class="text-[11px] text-slate-300 max-w-[190px] truncate">-</p>
+            </div>
+            <button type="button" class="btn-logout-action px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 text-rose-200 text-xs font-bold transition-colors flex-shrink-0">
+              Log Keluar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- BAR RINGKASAN PANTAS (MASA NYATA) -->
+      <div class="bg-slate-800 border-t border-slate-700/80">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-700/90 text-slate-200 font-semibold">
+              <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+              </svg>
+              No. Resit Seterusnya: <strong id="top-next-receipt-no" class="text-emerald-300 font-extrabold">#193</strong>
+            </span>
+            <span id="mobile-user-badge" class="lg:hidden inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-700/60 text-slate-300 text-[11px] truncate max-w-[200px]">
+              -
+            </span>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <span class="text-slate-300">
+              Jumlah Keseluruhan Sewa Terkumpul:
+              <strong id="top-total-rent" class="text-white font-extrabold text-sm ml-1">RM 0.00</strong>
+            </span>
+            <span class="hidden sm:inline text-slate-500">|</span>
+            <span class="hidden sm:inline text-slate-300">
+              Bil. Resit: <strong id="top-total-count" class="text-emerald-300 font-bold">0</strong>
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- KANDUNGAN UTAMA -->
+    <main class="no-print flex-1 max-w-7xl w-full mx-auto px-2.5 sm:px-6 lg:px-8 py-4 sm:py-6">
+
+      <!-- ================================================================= -->
+      <!-- TAB 1: CIPTA RESIT & PRATONTON LANGSUNG A4                        -->
+      <!-- ================================================================= -->
+      <section id="tab-create" class="tab-panel">
+
+        <!-- Sepanduk Mod Suntingan -->
+        <div id="editing-banner" class="hidden mb-5 bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </div>
+            <div>
+              <p class="text-sm font-bold text-amber-950">
+                Sedang Menyunting Resit <span id="editing-receipt-no" class="font-mono text-amber-800">#---</span>
+                <span class="text-xs font-normal text-amber-700 ml-1">(<span id="editing-tx-id" class="font-mono"></span>)</span>
+              </p>
+              <p class="text-xs text-amber-700">Nombor resit asal dikekalkan. Klik simpan untuk mengemas kini rekod di awan.</p>
+            </div>
+          </div>
+          <button type="button" id="btn-cancel-edit"
+            class="px-3.5 py-2 text-xs font-bold rounded-xl bg-white border border-amber-300 text-amber-900 hover:bg-amber-100 transition-colors self-start sm:self-auto">
+            Batal Suntingan / Resit Baharu
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
+
+          <!-- LAJUR KIRI: BORANG INPUT RESIT -->
+          <div class="lg:col-span-5 min-w-0 max-w-full bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 space-y-5">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3.5">
+              <div>
+                <h2 class="text-base font-bold text-slate-900">Butiran Resit Sewa</h2>
+                <p class="text-xs text-slate-500">Penomboran automatik melalui Firestore Transaction</p>
+              </div>
+              <span id="form-seq-badge" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+                <span>Seterusnya: <strong id="form-seq-badge-no">#193</strong></span>
+              </span>
+            </div>
+
+            <!-- Dropdown Auto-Isi Profil -->
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+              <label for="profile-select" class="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
+                Pilih Profil Rumah / Penyewa (Auto-Isi)
+              </label>
+              <select id="profile-select"
+                class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-800">
+                <option value="">-- Pilih Profil Tuan Rumah &amp; Penyewa --</option>
+              </select>
+            </div>
+
+            <!-- No. Resit & Tarikh Resit -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label for="input-receipt-no" class="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1.5">
+                  <span>No. Resit (Receipt #)</span>
+                  <span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">Automatik</span>
+                </label>
+                <div class="relative">
+                  <input type="text" id="input-receipt-no" readonly
+                    class="w-full rounded-xl border border-slate-200 bg-slate-100 pl-3.5 pr-9 py-2.5 text-sm font-extrabold text-slate-800 cursor-not-allowed focus:outline-none" />
+                  <svg class="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+              </div>
+              <div>
+                <label for="input-receipt-date" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Tarikh Resit (Receipt Date)
+                </label>
+                <input type="date" id="input-receipt-date"
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800" />
+              </div>
+            </div>
+
+            <!-- Kaedah Bayaran & No. Rujukan -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label for="input-payment-method" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Kaedah Bayaran
+                </label>
+                <select id="input-payment-method"
+                  class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800">
+                  <option value="Pemindahan Bank">Pemindahan Bank</option>
+                  <option value="Tunai">Tunai</option>
+                  <option value="DuitNow QR">DuitNow QR</option>
+                  <option value="Cek">Cek</option>
+                </select>
+              </div>
+              <div>
+                <label for="input-reference-no" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                  No. Rujukan <span class="text-slate-400 font-normal">(Opsyenal)</span>
+                </label>
+                <input type="text" id="input-reference-no"
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: IBG-882910" />
+              </div>
+            </div>
+
+            <!-- Maklumat Tuan Rumah -->
+            <div class="space-y-3">
+              <div>
+                <label for="input-landlord-name" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Nama Tuan Rumah
+                </label>
+                <input type="text" id="input-landlord-name"
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: MUHAMAD ZAMAN BIN JALANI (TUAN RUMAH)" />
+              </div>
+              <div>
+                <label for="input-landlord-address" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Alamat Rumah / Premis
+                </label>
+                <textarea id="input-landlord-address" rows="2"
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800 resize-none"
+                  placeholder="Alamat premis sewaan"></textarea>
+              </div>
+            </div>
+
+            <!-- Maklumat Penyewa -->
+            <div>
+              <label for="input-tenant-name" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                Nama Penyewa (Bill To)
+              </label>
+              <input type="text" id="input-tenant-name"
+                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                placeholder="cth: ASLAN BIN CHE MI (PENYEWA)" />
+            </div>
+
+            <!-- Item Bayaran Dinamik -->
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label class="block text-xs font-semibold text-slate-700">
+                  Item Bayaran Sewa &amp; Lain-lain
+                </label>
+                <button type="button" id="btn-add-item"
+                  class="inline-flex items-center gap-1 text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg transition-colors">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Tambah Baris
+                </button>
+              </div>
+
+              <div id="items-container" class="space-y-2.5"></div>
+
+              <div class="mt-3 flex items-center justify-between bg-slate-900 text-white rounded-xl px-4 py-3">
+                <div>
+                  <span class="text-xs font-bold uppercase tracking-wider text-slate-300 block">Jumlah Resit (TOTAL)</span>
+                  <span id="form-item-count-note" class="text-[11px] text-slate-400">1 item bayaran</span>
+                </div>
+                <span id="form-total-display" class="text-lg font-extrabold text-emerald-300">RM 0.00</span>
+              </div>
+            </div>
+
+            <!-- Suis Status PAID -->
+            <div class="flex items-center justify-between bg-emerald-50/70 border border-emerald-200/80 rounded-xl px-4 py-3">
+              <div>
+                <p class="text-sm font-bold text-slate-900">Status Bayaran: <span id="paid-status-label" class="text-emerald-700">PAID</span></p>
+                <p class="text-xs text-slate-600">Paparkan cop merah "PAID" pada resit</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer flex-shrink-0 ml-3">
+                <input type="checkbox" id="input-is-paid" class="sr-only peer" checked />
+                <div class="w-11 h-6 bg-slate-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-emerald-400 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+              </label>
+            </div>
+
+            <!-- Terma & Syarat -->
+            <div>
+              <label for="input-terms" class="block text-xs font-semibold text-slate-700 mb-1.5">
+                Terma &amp; Syarat (Terms &amp; Conditions)
+              </label>
+              <textarea id="input-terms" rows="2"
+                class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800 resize-none">Payment is due within 15 days</textarea>
+            </div>
+
+            <!-- 3 Butang Tindakan Utama -->
+            <div class="pt-2 space-y-2.5">
+              <button type="button" id="btn-pdf-and-save"
+                class="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-bold shadow-sm transition-colors disabled:opacity-60">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span id="btn-pdf-label">Jana PDF &amp; Simpan Transaksi</span>
+              </button>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button type="button" id="btn-print-and-save"
+                  class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors disabled:opacity-60">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                  </svg>
+                  <span>Cetak &amp; Simpan Transaksi</span>
+                </button>
+
+                <button type="button" id="btn-save-only"
+                  class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-blue-900 hover:bg-blue-950 text-white text-xs sm:text-sm font-bold shadow-sm transition-colors disabled:opacity-60">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                  </svg>
+                  <span id="btn-save-only-text">Simpan Transaksi Sahaja</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- LAJUR KANAN: PRATONTON LANGSUNG RESIT A4 -->
+          <div class="lg:col-span-7 min-w-0 max-w-full">
+            <div class="bg-slate-200/80 rounded-2xl border border-slate-300 p-2.5 sm:p-5">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-3 px-1">
+                <div class="flex items-center gap-2">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                  <h3 class="text-xs sm:text-sm font-bold text-slate-800">
+                    Pratonton Langsung Resit A4 (Tanpa Watermark)
+                  </h3>
+                </div>
+                <span id="preview-tx-id-badge" class="text-[11px] font-mono font-semibold px-2.5 py-1 rounded-lg bg-white text-slate-600 border border-slate-300">
+                  Ref: TRX-PREVIEW
+                </span>
+              </div>
+
+              <div id="preview-viewport" class="preview-viewport">
+                <div id="preview-scaler" class="preview-scaler">
+                  <div id="live-receipt-preview" class="receipt-sheet shadow-xl border border-slate-200 rounded-sm"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <!-- TAB 2: REKOD TRANSAKSI & PENJUMLAHAN AMAUN SEWA                   -->
+      <!-- ================================================================= -->
+      <section id="tab-transactions" class="tab-panel hidden space-y-6">
+
+        <!-- 4 Kad Ringkasan Masa Nyata -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center flex-shrink-0">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Jumlah Keseluruhan Sewa</p>
+              <p id="stat-grand-total" class="text-xl sm:text-2xl font-extrabold text-slate-900 mt-0.5 truncate">RM 0.00</p>
+              <p class="text-[11px] text-slate-400">Semua resit dijana</p>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Jumlah Dibayar (PAID)</p>
+              <p id="stat-paid-amount" class="text-xl sm:text-2xl font-extrabold text-emerald-700 mt-0.5 truncate">RM 0.00</p>
+              <p id="stat-paid-count" class="text-[11px] text-emerald-600 font-medium">0 resit berbayar</p>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Jumlah Belum Bayar</p>
+              <p id="stat-pending-amount" class="text-xl sm:text-2xl font-extrabold text-amber-600 mt-0.5 truncate">RM 0.00</p>
+              <p id="stat-pending-count" class="text-[11px] text-amber-600 font-medium">0 resit tertunggak</p>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 rounded-2xl bg-blue-50 text-blue-800 flex items-center justify-center flex-shrink-0">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Kutipan Bulan Semasa</p>
+              <p id="stat-current-month-amount" class="text-xl sm:text-2xl font-extrabold text-blue-900 mt-0.5 truncate">RM 0.00</p>
+              <p class="text-[11px] text-slate-500 font-semibold">
+                Jumlah Resit: <span id="stat-tx-count" class="text-slate-800 font-bold">0</span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ringkasan Jumlah Sewa Mengikut Penyewa / Rumah -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-3.5">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div>
+              <h2 class="text-sm sm:text-base font-bold text-slate-900">Ringkasan Jumlah Sewa Mengikut Penyewa / Rumah</h2>
+              <p class="text-xs text-slate-500">Jumlah terkumpul amaun sewa dan bilangan resit bagi setiap penyewa</p>
+            </div>
+            <span id="tenant-summary-total-badge" class="px-3 py-1 rounded-full bg-slate-100 text-slate-800 text-xs font-bold">
+              0 Penyewa
+            </span>
+          </div>
+          <div id="tenant-summary-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5"></div>
+        </div>
+
+        <!-- Bar Penapis & Eksport CSV -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div>
+              <h2 class="text-base font-bold text-slate-900">Lejar Rekod Transaksi</h2>
+              <p class="text-xs text-slate-500">Disegerakkan secara masa nyata daripada Cloud Firestore</p>
+            </div>
+            <button type="button" id="btn-export-csv"
+              class="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Eksport CSV (Excel)
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
+            <div class="lg:col-span-4 relative">
+              <svg class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input type="text" id="filter-search"
+                class="w-full pl-10 pr-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                placeholder="Cari ID, No. Resit, Penyewa, Keterangan..." />
+            </div>
+
+            <div class="lg:col-span-2">
+              <select id="filter-status"
+                class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-800">
+                <option value="ALL">Semua Status</option>
+                <option value="PAID">PAID</option>
+                <option value="PENDING">Belum Bayar</option>
+              </select>
+            </div>
+
+            <div class="lg:col-span-3">
+              <input type="month" id="filter-month"
+                class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-800" />
+            </div>
+
+            <div class="lg:col-span-3 flex gap-2">
+              <select id="filter-tenant"
+                class="flex-1 min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-800">
+                <option value="ALL">Semua Penyewa</option>
+              </select>
+              <button type="button" id="btn-reset-filters"
+                class="px-3 py-2.5 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold flex-shrink-0 transition-colors">
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pt-1">
+            <span id="filter-summary-text">Memaparkan semua transaksi</span>
+            <span id="filter-total-text" class="font-extrabold text-slate-900 bg-slate-100 px-3 py-1 rounded-lg">
+              JUMLAH MENGIKUT TAPISAN: RM 0.00
+            </span>
+          </div>
+        </div>
+
+        <!-- Jadual Desktop + Kad Mudah Alih -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="hidden lg:block overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  <th class="py-3.5 px-4">No. Resit &amp; ID Transaksi</th>
+                  <th class="py-3.5 px-4">Tarikh Resit</th>
+                  <th class="py-3.5 px-4">Penyewa &amp; Tuan Rumah</th>
+                  <th class="py-3.5 px-4">Keterangan &amp; Bayaran</th>
+                  <th class="py-3.5 px-4 text-right">Amaun Sewa (RM)</th>
+                  <th class="py-3.5 px-4 text-center">Status</th>
+                  <th class="py-3.5 px-4 text-right">Tindakan</th>
+                </tr>
+              </thead>
+              <tbody id="tx-table-body" class="divide-y divide-slate-100 text-sm"></tbody>
+              <tfoot id="tx-table-foot" class="bg-slate-900 text-white">
+                <tr>
+                  <td colspan="4" class="py-3.5 px-4 text-xs font-bold uppercase tracking-wider">
+                    JUMLAH MENGIKUT TAPISAN (<span id="tfoot-filtered-count">0</span> Resit)
+                  </td>
+                  <td id="tfoot-filtered-total" class="py-3.5 px-4 text-right text-base font-extrabold text-emerald-300 whitespace-nowrap">
+                    RM 0.00
+                  </td>
+                  <td colspan="2" class="py-3.5 px-4 text-right text-[11px] text-slate-300">
+                    Jumlah automatik daripada rekod ditapis
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <div id="tx-cards-container" class="lg:hidden divide-y divide-slate-100"></div>
+
+          <div id="tx-mobile-foot" class="lg:hidden bg-slate-900 text-white px-4 py-3.5 flex items-center justify-between gap-2">
+            <div>
+              <p class="text-[11px] font-bold uppercase tracking-wider text-slate-300">JUMLAH MENGIKUT TAPISAN</p>
+              <p class="text-[11px] text-slate-400"><span id="mobile-filtered-count">0</span> resit ditapis</p>
+            </div>
+            <span id="mobile-filtered-total" class="text-lg font-extrabold text-emerald-300">RM 0.00</span>
+          </div>
+
+          <div id="tx-empty-state" class="hidden py-14 px-6 text-center">
+            <p class="text-sm font-bold text-slate-700">Tiada rekod transaksi ditemui</p>
+            <p class="text-xs text-slate-500 mt-1">Cuba ubah penapis atau cipta resit baharu pada tab "Cipta Resit".</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <!-- TAB 3: PROFIL PENYEWA / RUMAH                                     -->
+      <!-- ================================================================= -->
+      <section id="tab-profiles" class="tab-panel hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
+          <div class="lg:col-span-5 min-w-0 max-w-full bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 space-y-4">
+            <div class="border-b border-slate-100 pb-3.5 flex items-center justify-between">
+              <div>
+                <h2 id="profile-form-title" class="text-base font-bold text-slate-900">Tambah Profil Baharu</h2>
+                <p class="text-xs text-slate-500">Disimpan terus ke koleksi Firestore <code class="font-mono">profiles</code></p>
+              </div>
+              <button type="button" id="btn-cancel-profile-edit" class="hidden text-xs font-bold text-rose-600 hover:underline">
+                Batal Suntingan
+              </button>
+            </div>
+
+            <form id="profile-form" class="space-y-4">
+              <div>
+                <label for="prof-landlord" class="block text-xs font-semibold text-slate-700 mb-1.5">Nama Tuan Rumah</label>
+                <input type="text" id="prof-landlord" required
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: MUHAMAD ZAMAN BIN JALANI (TUAN RUMAH)" />
+              </div>
+
+              <div>
+                <label for="prof-address" class="block text-xs font-semibold text-slate-700 mb-1.5">Alamat Rumah</label>
+                <textarea id="prof-address" rows="2" required
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800 resize-none"
+                  placeholder="Alamat penuh rumah sewa"></textarea>
+              </div>
+
+              <div>
+                <label for="prof-tenant" class="block text-xs font-semibold text-slate-700 mb-1.5">Nama Penyewa</label>
+                <input type="text" id="prof-tenant" required
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: ASLAN BIN CHE MI (PENYEWA)" />
+              </div>
+
+              <div>
+                <label for="prof-rent" class="block text-xs font-semibold text-slate-700 mb-1.5">Amaun Sewa Bulanan Lalai (RM)</label>
+                <input type="number" id="prof-rent" step="0.01" min="0" required
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: 1000.00" />
+              </div>
+
+              <div>
+                <label for="prof-terms" class="block text-xs font-semibold text-slate-700 mb-1.5">Terma &amp; Syarat Lalai</label>
+                <textarea id="prof-terms" rows="2"
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800 resize-none">Payment is due within 15 days</textarea>
+              </div>
+
+              <button type="submit" id="btn-save-profile"
+                class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-bold shadow-sm transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                <span id="btn-save-profile-text">Simpan Profil</span>
+              </button>
+            </form>
+          </div>
+
+          <div class="lg:col-span-7 min-w-0 max-w-full space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="text-base font-bold text-slate-900">Senarai Profil Rumah &amp; Penyewa</h2>
+                <p class="text-xs text-slate-500">Klik "Guna Profil Ini" untuk mengisi borang Cipta Resit secara automatik</p>
+              </div>
+              <span id="profiles-count-badge" class="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-200 text-slate-800">0 Profil</span>
+            </div>
+            <div id="profiles-list-container" class="grid grid-cols-1 gap-4"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <!-- TAB 4: URUS AKSES (ADMIN SAHAJA - WHITELIST EMEL)                 -->
+      <!-- ================================================================= -->
+      <section id="tab-access" class="tab-panel hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
+          <!-- Borang Tambah Emel Dibenarkan -->
+          <div class="lg:col-span-5 min-w-0 max-w-full bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 space-y-4">
+            <div class="border-b border-slate-100 pb-3.5">
+              <h2 class="text-base font-bold text-slate-900">Tambah Pengguna Dibenarkan</h2>
+              <p class="text-xs text-slate-500">Hanya emel dalam senarai <code class="font-mono">allowed_users</code> dibenarkan masuk</p>
+            </div>
+
+            <form id="access-form" class="space-y-4">
+              <div>
+                <label for="access-email" class="block text-xs font-semibold text-slate-700 mb-1.5">Alamat Emel Gmail Pengguna</label>
+                <input type="email" id="access-email" required
+                  class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800"
+                  placeholder="cth: staf@gmail.com" />
+              </div>
+
+              <div>
+                <label for="access-role" class="block text-xs font-semibold text-slate-700 mb-1.5">Peranan Akses</label>
+                <select id="access-role"
+                  class="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800">
+                  <option value="Staf">Staf (Boleh urus resit, transaksi &amp; profil)</option>
+                  <option value="Admin">Admin (Akses penuh termasuk Urus Akses)</option>
+                </select>
+              </div>
+
+              <button type="submit" id="btn-add-access"
+                class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold shadow-sm transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                <span>Tambah Emel ke Senarai Akses</span>
+              </button>
+            </form>
+
+            <div class="rounded-xl bg-blue-50 border border-blue-200 p-3.5 text-xs text-blue-900 space-y-1">
+              <p class="font-bold">Cara Pengguna Baharu Masuk:</p>
+              <p>Selepas emel Gmail ditambah di sini, pengguna tersebut boleh terus membuka pautan sistem dan klik butang <strong>Log Masuk dengan Google (Gmail)</strong> menggunakan akaun Gmail yang sama.</p>
+            </div>
+          </div>
+
+          <!-- Senarai Emel Dibenarkan -->
+          <div class="lg:col-span-7 min-w-0 max-w-full space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="text-base font-bold text-slate-900">Senarai Emel Dibenarkan</h2>
+                <p class="text-xs text-slate-500">Kawal siapa yang boleh mengakses sistem resit ini</p>
+              </div>
+              <span id="access-count-badge" class="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-200 text-slate-800">0 Pengguna</span>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div id="access-list-container" class="divide-y divide-slate-100"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- BEKAS KHAS CETAKAN & PENJANAAN PDF A4                                 -->
+  <!-- ===================================================================== -->
+  <div id="print-only-container"></div>
+  <div id="pdf-render-sandbox" class="no-print" style="position: fixed; left: -10000px; top: 0; width: 794px; pointer-events: none; z-index: -1;"></div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL PENGESAHAN TERSUAI (TIADA alert() / confirm())                  -->
+  <!-- ===================================================================== -->
+  <div id="confirm-modal" class="no-print fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 space-y-4">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center flex-shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <div>
+          <h3 id="confirm-modal-title" class="text-base font-bold text-slate-900">Sahkan Tindakan</h3>
+          <p id="confirm-modal-desc" class="text-sm text-slate-600 mt-1">Adakah anda pasti?</p>
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-2.5 pt-2">
+        <button type="button" id="confirm-modal-cancel"
+          class="px-4 py-2.5 rounded-xl border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+          Batal
+        </button>
+        <button type="button" id="confirm-modal-ok"
+          class="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold shadow-sm transition-colors">
+          Ya, Teruskan
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- BEKAS NOTIFIKASI TOAST                                                -->
+  <!-- ===================================================================== -->
+  <div id="toast-container" class="no-print fixed bottom-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 pointer-events-none sm:max-w-md"></div>
+
+  <!-- ===================================================================== -->
+  <!-- SKRIP MODUL FIREBASE & LOGIK UTAMA APLIKASI                           -->
+  <!-- ===================================================================== -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import {
+      getAuth,
+      GoogleAuthProvider,
+      signInWithPopup,
+      signInWithCustomToken,
+      signOut,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import {
+      getFirestore,
+      doc,
+      getDoc,
+      getDocs,
+      setDoc,
+      updateDoc,
+      deleteDoc,
+      collection,
+      onSnapshot,
+      runTransaction
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // =========================================================================
+    // 1. KONFIGURASI FIREBASE PROJEK: sistem-resit-sewa
+    // =========================================================================
+    const appId = typeof __app_id !== "undefined" ? __app_id : "sistem-resit-sewa";
+
+    const GOOGLE_SITES_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyBc3cSwfw1A2-rB-AKJmmCq5IcUxfrL-Fs",
+      authDomain: "sistem-resit-sewa.firebaseapp.com",
+      projectId: "sistem-resit-sewa",
+      storageBucket: "sistem-resit-sewa.firebasestorage.app",
+      messagingSenderId: "660502593767",
+      appId: "1:660502593767:web:f47533397f790370196242",
+      measurementId: "G-5NJZYB7WEJ"
+    };
+
+    const firebaseConfig =
+      typeof __firebase_config !== "undefined"
+        ? JSON.parse(__firebase_config)
+        : GOOGLE_SITES_FIREBASE_CONFIG;
+
+    // Inisialisasi Firebase App, Auth & Firestore
+    let app = null;
+    let auth = null;
+    let db = null;
+
+    try {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getFirestore(app);
+    } catch (err) {
+      console.error("Ralat inisialisasi Firebase:", err);
+    }
+
+    // Pembantu laluan Firestore patuh struktur /artifacts/{appId}/public/data/{collection}
+    const getPublicCol = (colName) => collection(db, "artifacts", appId, "public", "data", colName);
+    const getPublicDoc = (colName, docId) => doc(db, "artifacts", appId, "public", "data", colName, docId);
+
+    // =========================================================================
+    // 2. DATA PERMULAAN (AUTO-SEED JIKA PANGKALAN DATA KOSONG)
+    // =========================================================================
+    const MALAY_MONTHS = [
+      "JANUARI", "FEBRUARI", "MAC", "APRIL", "MEI", "JUN",
+      "JULAI", "OGOS", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DISEMBER"
+    ];
+
+    const SEED_PROFILES = [
+      {
+        id: "PROF-1",
+        landlordName: "MUHAMAD ZAMAN BIN JALANI (TUAN RUMAH)",
+        landlordAddress: "NO.3424, LORONG 14/11, TAMAN SERAI WANGI 3 & 4, 09400 PADANG SERAI, KEDAH",
+        tenantName: "ASLAN BIN CHE MI (PENYEWA)",
+        monthlyRent: 1000.00,
+        terms: "Payment is due within 15 days"
+      },
+      {
+        id: "PROF-2",
+        landlordName: "ROSNANI BINTI RAMLI (TUAN RUMAH)",
+        landlordAddress: "NO.46, TAMAN DESA LILI, BALING, KEDAH",
+        tenantName: "ZUHAIRI BIN MOHD DAUD (PENYEWA)",
+        monthlyRent: 600.00,
+        terms: "Payment is due within 15 days"
+      }
+    ];
+
+    const SEED_TRANSACTIONS = [
+      {
+        id: "TRX-20261101-191",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        receiptNo: "191",
+        receiptDate: "2026-11-01",
+        landlordName: "MUHAMAD ZAMAN BIN JALANI (TUAN RUMAH)",
+        landlordAddress: "NO.3424, LORONG 14/11, TAMAN SERAI WANGI 3 & 4, 09400 PADANG SERAI, KEDAH",
+        tenantName: "ASLAN BIN CHE MI (PENYEWA)",
+        items: [{ description: "SEWA BULAN NOVEMBER 2026", amount: 1000.00 }],
+        total: 1000.00,
+        paymentMethod: "Pemindahan Bank",
+        referenceNo: "",
+        status: "PAID",
+        terms: "Payment is due within 15 days"
+      },
+      {
+        id: "TRX-20261125-192",
+        createdAt: "2026-11-25T10:30:00.000Z",
+        receiptNo: "192",
+        receiptDate: "2026-11-25",
+        landlordName: "ROSNANI BINTI RAMLI (TUAN RUMAH)",
+        landlordAddress: "NO.46, TAMAN DESA LILI, BALING, KEDAH",
+        tenantName: "ZUHAIRI BIN MOHD DAUD (PENYEWA)",
+        items: [{ description: "SEWA BULAN DISEMBER 2026", amount: 600.00 }],
+        total: 600.00,
+        paymentMethod: "Pemindahan Bank",
+        referenceNo: "",
+        status: "PAID",
+        terms: "Payment is due within 15 days"
+      }
+    ];
+
+    // =========================================================================
+    // 3. KEADAAN APLIKASI DALAM MEMORI
+    // =========================================================================
+    let currentUser = null;
+    let currentUserEmail = "";
+    let currentUserName = "";
+    let currentUserPhoto = "";
+    let currentUserRole = "Staf"; // 'Admin' atau 'Staf'
+
+    let profiles = [];
+    let transactions = [];
+    let allowedUsers = [];
+    let lastReceiptNumber = 192;
+
+    let editingTransactionId = null;
+    let editingProfileId = null;
+    let confirmCallback = null;
+    let isSavingTransaction = false;
+    let formInitialized = false;
+
+    let unsubscribers = [];
+
+    let formState = {
+      receiptNo: "193",
+      receiptDate: "",
+      paymentMethod: "Pemindahan Bank",
+      referenceNo: "",
+      landlordName: "",
+      landlordAddress: "",
+      tenantName: "",
+      items: [{ description: "", amount: "0.00" }],
+      isPaid: true,
+      terms: "Payment is due within 15 days"
+    };
+
+    // =========================================================================
+    // 4. FUNGSI UTILITI (TARIKH, MATA WANG, ID, TOAST, MODAL)
+    // =========================================================================
+    function showScreen(screenId) {
+      ["view-loading", "view-auth", "view-denied", "view-app"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (id === screenId) {
+          el.classList.remove("hidden");
+        } else {
+          el.classList.add("hidden");
+        }
+      });
+      if (screenId === "view-app") {
+        requestAnimationFrame(scalePreviewToFit);
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function getTodayISO() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    }
+
+    function formatDisplayDate(isoDate) {
+      if (!isoDate) return "-";
+      const parts = isoDate.split("-");
+      if (parts.length !== 3) return isoDate;
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+
+    function formatCurrency(val) {
+      const num = parseFloat(val);
+      if (isNaN(num)) return "0.00";
+      return num.toLocaleString("en-MY", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    function getCurrentMonthDesc() {
+      const now = new Date();
+      return `SEWA BULAN ${MALAY_MONTHS[now.getMonth()]} ${now.getFullYear()}`;
+    }
+
+    function getNextMonthDesc(descText) {
+      const upper = String(descText || "").toUpperCase();
+      for (let i = 0; i < MALAY_MONTHS.length; i++) {
+        const regex = new RegExp(`(${MALAY_MONTHS[i]})\\s+(\\d{4})`, "i");
+        const match = upper.match(regex);
+        if (match) {
+          let nextIdx = i + 1;
+          let year = parseInt(match[2], 10);
+          if (nextIdx >= 12) {
+            nextIdx = 0;
+            year += 1;
+          }
+          return upper.replace(regex, `${MALAY_MONTHS[nextIdx]} ${year}`);
+        }
+      }
+      return getCurrentMonthDesc();
+    }
+
+    function generateTransactionId(isoDate, receiptNo) {
+      const cleanDate = (isoDate || getTodayISO()).replace(/-/g, "");
+      const cleanNo = String(receiptNo || "0").replace(/[^A-Za-z0-9]/g, "");
+      return `TRX-${cleanDate}-${cleanNo}`;
+    }
+
+    function sanitizeEmailDocId(email) {
+      return String(email || "").trim().toLowerCase().replace(/[^a-z0-9._@-]/g, "_");
+    }
+
+    function showToast(message, type = "success") {
+      const container = document.getElementById("toast-container");
+      if (!container) return;
+      const toast = document.createElement("div");
+
+      const styles = {
+        success: "bg-emerald-700 text-white border-emerald-600",
+        error: "bg-rose-700 text-white border-rose-600",
+        info: "bg-slate-900 text-white border-slate-700"
+      };
+
+      toast.className = `toast-enter pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg text-xs sm:text-sm font-semibold ${styles[type] || styles.info}`;
+      toast.innerHTML = `<span>${escapeHtml(message)}</span>`;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        toast.style.transition = "opacity 0.25s ease";
+        setTimeout(() => toast.remove(), 260);
+      }, 3400);
+    }
+
+    function openConfirmModal(title, desc, onConfirm) {
+      document.getElementById("confirm-modal-title").textContent = title;
+      document.getElementById("confirm-modal-desc").textContent = desc;
+      confirmCallback = onConfirm;
+      const modal = document.getElementById("confirm-modal");
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+    }
+
+    function closeConfirmModal() {
+      const modal = document.getElementById("confirm-modal");
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+      confirmCallback = null;
+    }
+
+    function showAuthError(msg) {
+      const box = document.getElementById("auth-error-box");
+      if (!box) return;
+      if (!msg) {
+        box.classList.add("hidden");
+        box.textContent = "";
+      } else {
+        box.textContent = msg;
+        box.classList.remove("hidden");
+      }
+    }
+
+    // =========================================================================
+    // 5. PENGESAHAN GOOGLE (GMAIL) & KAWALAN AKSES WHITELIST (allowed_users)
+    // =========================================================================
+    function clearSubscriptions() {
+      unsubscribers.forEach((unsub) => {
+        try { unsub(); } catch (_) {}
+      });
+      unsubscribers = [];
+    }
+
+    async function handleGoogleSignIn() {
+      if (!auth) {
+        showAuthError("Firebase belum berjaya dimulakan. Sila muat semula halaman.");
+        return;
+      }
+      showAuthError("");
+      const btn = document.getElementById("btn-google-signin");
+      const btnText = document.getElementById("btn-google-signin-text");
+      btn.disabled = true;
+      btnText.textContent = "Membuka tetingkap Google...";
+
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: "select_account" });
+        await signInWithPopup(auth, provider);
+      } catch (err) {
+        console.error("Ralat Log Masuk Google:", err);
+        let msg = "Gagal log masuk dengan Google. Sila cuba lagi.";
+        if (err.code === "auth/popup-closed-by-user") {
+          msg = "Tetingkap log masuk Google telah ditutup sebelum selesai.";
+        } else if (err.code === "auth/popup-blocked") {
+          msg = "Tetingkap pop-up disekat oleh pelayar anda. Sila benarkan pop-up atau buka pautan di tab baharu.";
+        } else if (err.code === "auth/unauthorized-domain") {
+          const domain = window.location.hostname || "domain ini";
+          msg = `Domain (${domain}) belum didaftarkan di Firebase Console > Authentication > Settings > Authorized domains.`;
+        } else if (err.code === "auth/operation-not-allowed") {
+          msg = "Log masuk Google belum diaktifkan di Firebase Console > Authentication > Sign-in method.";
+        } else if (err.message) {
+          msg = `Ralat: ${err.message}`;
+        }
+        showAuthError(msg);
+      } finally {
+        btn.disabled = false;
+        btnText.textContent = "Log Masuk dengan Google (Gmail)";
+      }
+    }
+
+    async function handleLogout() {
+      clearSubscriptions();
+      formInitialized = false;
+      editingTransactionId = null;
+      editingProfileId = null;
+      if (auth) {
+        try {
+          await signOut(auth);
+        } catch (err) {
+          console.error("Ralat log keluar:", err);
+        }
+      }
+      showScreen("view-auth");
+    }
+
+    async function verifyAccessAndBootstrap(user) {
+      if (!user || !db) {
+        showScreen("view-auth");
+        return;
+      }
+
+      currentUser = user;
+      currentUserEmail = (user.email || "").trim().toLowerCase();
+      currentUserName = user.displayName || (currentUserEmail ? currentUserEmail.split("@")[0] : "Pengguna");
+      currentUserPhoto = user.photoURL || "";
+
+      // Jika sesi tanpa emel (contohnya token ujian dalam persekitaran pratonton)
+      if (!currentUserEmail) {
+        currentUserEmail = `pengguna-${user.uid.slice(0, 6)}@pratonton.local`;
+      }
+
+      try {
+        const allowedSnap = await getDocs(getPublicCol("allowed_users"));
+        let authorizedEntry = null;
+
+        if (allowedSnap.empty) {
+          // Pengguna pertama secara automatik menjadi Admin!
+          const firstAdmin = {
+            email: currentUserEmail,
+            role: "Admin",
+            addedAt: new Date().toISOString(),
+            addedBy: "Sistem (Admin Pertama)"
+          };
+          await setDoc(getPublicDoc("allowed_users", sanitizeEmailDocId(currentUserEmail)), firstAdmin);
+          authorizedEntry = firstAdmin;
+        } else {
+          allowedSnap.forEach((docSnap) => {
+            const data = docSnap.data();
+            if ((data.email || "").trim().toLowerCase() === currentUserEmail) {
+              authorizedEntry = data;
+            }
+          });
+        }
+
+        if (!authorizedEntry) {
+          document.getElementById("denied-email-display").textContent = currentUserEmail;
+          showScreen("view-denied");
+          return;
+        }
+
+        currentUserRole = authorizedEntry.role === "Admin" ? "Admin" : "Staf";
+        updateUserHeaderUI();
+
+        // Auto-seed profil, transaksi & pembilang jika pangkalan data masih kosong
+        await ensureInitialDataSeeded();
+
+        // Mulakan pendengar masa nyata Firestore
+        startRealtimeListeners();
+
+        showScreen("view-app");
+      } catch (err) {
+        console.error("Ralat pengesahan akses Firestore:", err);
+        let msg = "Gagal menyambung ke Cloud Firestore. Pastikan pangkalan data dan peraturan (Rules) telah diterbitkan.";
+        if (err.code === "permission-denied") {
+          msg = "Akses Firestore disekat (permission-denied). Sila kemas kini tab Rules di Firebase Console > Firestore Database.";
+        }
+        showAuthError(msg);
+        showScreen("view-auth");
+      }
+    }
+
+    function updateUserHeaderUI() {
+      const nameEl = document.getElementById("header-user-name");
+      const emailEl = document.getElementById("header-user-email");
+      const roleEl = document.getElementById("header-user-role");
+      const photoEl = document.getElementById("header-user-photo");
+      const fallbackEl = document.getElementById("header-user-avatar-fallback");
+      const mobileBadge = document.getElementById("mobile-user-badge");
+      const accessTabBtn = document.getElementById("nav-tab-access");
+
+      if (nameEl) nameEl.textContent = currentUserName;
+      if (emailEl) emailEl.textContent = currentUserEmail;
+      if (roleEl) {
+        roleEl.textContent = currentUserRole;
+        roleEl.className =
+          currentUserRole === "Admin"
+            ? "inline-block text-[10px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/30"
+            : "inline-block text-[10px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-200 border border-blue-400/30";
+      }
+
+      if (photoEl && fallbackEl) {
+        if (currentUserPhoto) {
+          photoEl.src = currentUserPhoto;
+          photoEl.classList.remove("hidden");
+          fallbackEl.classList.add("hidden");
+        } else {
+          photoEl.classList.add("hidden");
+          fallbackEl.classList.remove("hidden");
+          fallbackEl.textContent = (currentUserName[0] || "U").toUpperCase();
+        }
+      }
+
+      if (mobileBadge) {
+        mobileBadge.textContent = `${currentUserRole}: ${currentUserEmail}`;
+      }
+
+      if (accessTabBtn) {
+        if (currentUserRole === "Admin") {
+          accessTabBtn.classList.remove("hidden");
+        } else {
+          accessTabBtn.classList.add("hidden");
+        }
+      }
+    }
+
+    async function ensureInitialDataSeeded() {
+      // 1. Semak pembilang settings/counter
+      const counterRef = getPublicDoc("settings", "counter");
+      const counterSnap = await getDoc(counterRef);
+      if (!counterSnap.exists()) {
+        await setDoc(counterRef, { lastReceiptNumber: 192 });
+      }
+
+      // 2. Semak profil permulaan
+      const profSnap = await getDocs(getPublicCol("profiles"));
+      if (profSnap.empty) {
+        for (const p of SEED_PROFILES) {
+          await setDoc(getPublicDoc("profiles", p.id), p);
+        }
+      }
+
+      // 3. Semak transaksi permulaan
+      const txSnap = await getDocs(getPublicCol("transactions"));
+      if (txSnap.empty) {
+        for (const tx of SEED_TRANSACTIONS) {
+          await setDoc(getPublicDoc("transactions", tx.id), tx);
+        }
+      }
+    }
+
+    // =========================================================================
+    // 6. PENDENGAR MASA NYATA CLOUD FIRESTORE (onSnapshot)
+    // =========================================================================
+    function startRealtimeListeners() {
+      clearSubscriptions();
+
+      // A. Pendengar pembilang nombor resit (settings/counter)
+      const unsubCounter = onSnapshot(
+        getPublicDoc("settings", "counter"),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const val = parseInt(docSnap.data().lastReceiptNumber, 10);
+            if (!isNaN(val)) {
+              lastReceiptNumber = val;
+            }
+          }
+          updateCounterBadgesUI();
+          if (!editingTransactionId) {
+            formState.receiptNo = String(lastReceiptNumber + 1);
+            document.getElementById("input-receipt-no").value = formState.receiptNo;
+            renderLivePreview();
+          }
+        },
+        (err) => {
+          console.error("Ralat pendengar pembilang:", err);
+        }
+      );
+      unsubscribers.push(unsubCounter);
+
+      // B. Pendengar profil penyewa / rumah
+      const unsubProfiles = onSnapshot(
+        getPublicCol("profiles"),
+        (snap) => {
+          profiles = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          profiles.sort((a, b) => (a.tenantName || "").localeCompare(b.tenantName || ""));
+          renderProfileSelect();
+          renderProfilesList();
+
+          if (!formInitialized && profiles.length > 0) {
+            formInitialized = true;
+            resetCreateFormToNextReceipt(profiles[0]);
+          }
+        },
+        (err) => {
+          console.error("Ralat pendengar profil:", err);
+        }
+      );
+      unsubscribers.push(unsubProfiles);
+
+      // C. Pendengar rekod transaksi
+      const unsubTx = onSnapshot(
+        getPublicCol("transactions"),
+        (snap) => {
+          transactions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          transactions.sort((a, b) => {
+            const numA = parseInt(a.receiptNo, 10) || 0;
+            const numB = parseInt(b.receiptNo, 10) || 0;
+            if (numB !== numA) return numB - numA;
+            return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+          });
+          renderTransactionsUI();
+        },
+        (err) => {
+          console.error("Ralat pendengar transaksi:", err);
+        }
+      );
+      unsubscribers.push(unsubTx);
+
+      // D. Pendengar senarai akses (allowed_users)
+      const unsubAccess = onSnapshot(
+        getPublicCol("allowed_users"),
+        (snap) => {
+          allowedUsers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          allowedUsers.sort((a, b) => {
+            if (a.role === "Admin" && b.role !== "Admin") return -1;
+            if (b.role === "Admin" && a.role !== "Admin") return 1;
+            return (a.email || "").localeCompare(b.email || "");
+          });
+          renderAccessList();
+
+          // Semak jika emel pengguna semasa telah dibuang secara langsung
+          const stillAllowed = allowedUsers.find(
+            (u) => (u.email || "").trim().toLowerCase() === currentUserEmail
+          );
+          if (!stillAllowed && allowedUsers.length > 0) {
+            document.getElementById("denied-email-display").textContent = currentUserEmail;
+            clearSubscriptions();
+            showScreen("view-denied");
+          } else if (stillAllowed && stillAllowed.role !== currentUserRole) {
+            currentUserRole = stillAllowed.role === "Admin" ? "Admin" : "Staf";
+            updateUserHeaderUI();
+          }
+        },
+        (err) => {
+          console.error("Ralat pendengar allowed_users:", err);
+        }
+      );
+      unsubscribers.push(unsubAccess);
+    }
+
+    // =========================================================================
+    // 7. PENGURUSAN TAB & BORANG CIPTA RESIT
+    // =========================================================================
+    function switchTab(tabName) {
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.add("hidden");
+      });
+      const activePanel = document.getElementById(`tab-${tabName}`);
+      if (activePanel) activePanel.classList.remove("hidden");
+
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        const isActive = btn.dataset.tab === tabName;
+        if (isActive) {
+          btn.classList.add("bg-white", "text-slate-900", "shadow-sm");
+          btn.classList.remove("text-slate-300", "hover:text-white");
+        } else {
+          btn.classList.remove("bg-white", "text-slate-900", "shadow-sm");
+          btn.classList.add("text-slate-300", "hover:text-white");
+        }
+      });
+
+      if (tabName === "create") {
+        requestAnimationFrame(scalePreviewToFit);
+      }
+    }
+
+    function updateCounterBadgesUI() {
+      const nextNo = `#${lastReceiptNumber + 1}`;
+      const topBadge = document.getElementById("top-next-receipt-no");
+      const formBadge = document.getElementById("form-seq-badge-no");
+      if (topBadge) topBadge.textContent = nextNo;
+      if (formBadge) formBadge.textContent = nextNo;
+    }
+
+    function calculateFormTotal() {
+      return formState.items.reduce((sum, item) => {
+        const val = parseFloat(item.amount);
+        return sum + (isNaN(val) ? 0 : val);
+      }, 0);
+    }
+
+    function resetCreateFormToNextReceipt(profileToUse = null) {
+      editingTransactionId = null;
+      document.getElementById("editing-banner").classList.add("hidden");
+      document.getElementById("btn-save-only-text").textContent = "Simpan Transaksi Sahaja";
+      document.getElementById("btn-pdf-label").textContent = "Jana PDF & Simpan Transaksi";
+
+      const nextNo = String(lastReceiptNumber + 1);
+      const today = getTodayISO();
+
+      formState = {
+        receiptNo: nextNo,
+        receiptDate: today,
+        paymentMethod: "Pemindahan Bank",
+        referenceNo: "",
+        landlordName: profileToUse ? profileToUse.landlordName : formState.landlordName || "",
+        landlordAddress: profileToUse ? profileToUse.landlordAddress : formState.landlordAddress || "",
+        tenantName: profileToUse ? profileToUse.tenantName : formState.tenantName || "",
+        items: [
+          {
+            description: getCurrentMonthDesc(),
+            amount: profileToUse ? Number(profileToUse.monthlyRent || 0).toFixed(2) : "0.00"
+          }
+        ],
+        isPaid: true,
+        terms: profileToUse ? profileToUse.terms || "Payment is due within 15 days" : "Payment is due within 15 days"
+      };
+
+      if (profileToUse) {
+        document.getElementById("profile-select").value = profileToUse.id;
+      }
+
+      syncFormInputsFromState();
+      renderItemRows();
+      renderLivePreview();
+    }
+
+    function syncFormInputsFromState() {
+      document.getElementById("input-receipt-no").value = formState.receiptNo;
+      document.getElementById("input-receipt-date").value = formState.receiptDate;
+      document.getElementById("input-payment-method").value = formState.paymentMethod;
+      document.getElementById("input-reference-no").value = formState.referenceNo;
+      document.getElementById("input-landlord-name").value = formState.landlordName;
+      document.getElementById("input-landlord-address").value = formState.landlordAddress;
+      document.getElementById("input-tenant-name").value = formState.tenantName;
+      document.getElementById("input-is-paid").checked = formState.isPaid;
+      document.getElementById("input-terms").value = formState.terms;
+
+      const label = document.getElementById("paid-status-label");
+      label.textContent = formState.isPaid ? "PAID" : "BELUM BAYAR";
+      label.className = formState.isPaid ? "text-emerald-700" : "text-amber-600";
+    }
+
+    function renderItemRows() {
+      const container = document.getElementById("items-container");
+      container.innerHTML = "";
+
+      formState.items.forEach((item, idx) => {
+        const row = document.createElement("div");
+        row.className = "flex flex-col sm:flex-row gap-2 items-stretch sm:items-center bg-slate-50 p-2.5 rounded-xl border border-slate-200";
+
+        row.innerHTML = `
+          <input type="text" data-idx="${idx}" data-field="description"
+            value="${escapeHtml(item.description)}"
+            placeholder="Keterangan (cth: SEWA BULAN DISEMBER 2026)"
+            class="item-input flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800" />
+          <div class="flex items-center gap-2">
+            <div class="relative w-full sm:w-32">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">RM</span>
+              <input type="number" step="0.01" min="0" data-idx="${idx}" data-field="amount"
+                value="${escapeHtml(item.amount)}"
+                class="item-input w-full rounded-lg border border-slate-300 bg-white pl-9 pr-2.5 py-2 text-xs sm:text-sm font-bold text-right text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-800" />
+            </div>
+            ${
+              formState.items.length > 1
+                ? `<button type="button" data-remove-idx="${idx}" title="Buang baris"
+                    class="btn-remove-item p-2 rounded-lg text-rose-600 hover:bg-rose-100 transition-colors flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>`
+                : ""
+            }
+          </div>
+        `;
+        container.appendChild(row);
+      });
+
+      container.querySelectorAll(".item-input").forEach((input) => {
+        input.addEventListener("input", (e) => {
+          const i = parseInt(e.target.dataset.idx, 10);
+          const field = e.target.dataset.field;
+          formState.items[i][field] = e.target.value;
+          updateFormTotalDisplay();
+          renderLivePreview();
+        });
+      });
+
+      container.querySelectorAll(".btn-remove-item").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          const i = parseInt(e.currentTarget.dataset.removeIdx, 10);
+          if (formState.items.length > 1) {
+            formState.items.splice(i, 1);
+            renderItemRows();
+            renderLivePreview();
+          }
+        });
+      });
+
+      updateFormTotalDisplay();
+    }
+
+    function updateFormTotalDisplay() {
+      const total = calculateFormTotal();
+      document.getElementById("form-total-display").textContent = `RM ${formatCurrency(total)}`;
+      document.getElementById("form-item-count-note").textContent = `${formState.items.length} item bayaran`;
+    }
+
+    // =========================================================================
+    // 8. TEMPLAT HTML RESIT A4 (PRATONTON, CETAKAN & PDF TANPA WATERMARK)
+    // =========================================================================
+    function buildReceiptHTML(data) {
+      const items = Array.isArray(data.items) && data.items.length > 0
+        ? data.items
+        : [{ description: "-", amount: 0 }];
+
+      const total = items.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+      const isPaid = data.status === "PAID" || data.isPaid === true;
+      const txId = data.id || generateTransactionId(data.receiptDate, data.receiptNo);
+
+      const rowsHtml = items
+        .map(
+          (it) => `
+          <tr>
+            <td style="padding: 15px 16px; border: 1px solid #cbd5e1; font-size: 14.5px; color: #1e293b; vertical-align: middle;">
+              ${escapeHtml(it.description || "-")}
+            </td>
+            <td style="padding: 15px 16px; border: 1px solid #cbd5e1; font-size: 14.5px; color: #1e293b; text-align: right; font-variant-numeric: tabular-nums; vertical-align: middle;">
+              ${formatCurrency(it.amount)}
+            </td>
+          </tr>
+        `
+        )
+        .join("");
+
+      const paymentMetaHtml = data.paymentMethod
+        ? `
+          <tr>
+            <td style="padding: 4px 16px 4px 0; font-size: 13.5px; font-weight: 700; color: #0f172a; text-align: right;">Payment Method</td>
+            <td style="padding: 4px 0; font-size: 13.5px; color: #1e293b; text-align: right;">${escapeHtml(data.paymentMethod)}</td>
+          </tr>
+        `
+        : "";
+
+      const refMetaHtml = data.referenceNo
+        ? `
+          <tr>
+            <td style="padding: 4px 16px 4px 0; font-size: 13.5px; font-weight: 700; color: #0f172a; text-align: right;">Reference #</td>
+            <td style="padding: 4px 0; font-size: 13.5px; color: #1e293b; text-align: right;">${escapeHtml(data.referenceNo)}</td>
+          </tr>
+        `
+        : "";
+
+      return `
+        <div>
+          <!-- Kepala Resit -->
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 14px;">
+            <tr>
+              <td style="vertical-align: top; padding: 0; width: 68%;">
+                <div style="font-size: 19px; font-weight: 700; color: #0f172a; letter-spacing: 0.2px; line-height: 1.3; margin-bottom: 8px;">
+                  ${escapeHtml(data.landlordName || "NAMA TUAN RUMAH")}
+                </div>
+                <div style="font-size: 12.5px; color: #475569; line-height: 1.5; white-space: pre-line;">
+                  ${escapeHtml(data.landlordAddress || "Alamat premis sewaan")}
+                </div>
+              </td>
+              <td style="vertical-align: top; padding: 0; text-align: right; width: 32%;">
+                <div style="font-size: 27px; font-weight: 700; color: #0f172a; letter-spacing: 1.8px; line-height: 1.1;">
+                  RECEIPT
+                </div>
+              </td>
+            </tr>
+          </table>
+
+          <hr style="border: none; border-top: 2px solid #0f172a; margin: 22px 0 28px 0;" />
+
+          <!-- Maklumat Penyewa & Meta Resit -->
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 34px;">
+            <tr>
+              <td style="vertical-align: top; padding: 0; width: 54%;">
+                <div style="font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 5px;">Bill To</div>
+                <div style="font-size: 14.5px; color: #1e293b; line-height: 1.45;">
+                  ${escapeHtml(data.tenantName || "NAMA PENYEWA")}
+                </div>
+              </td>
+              <td style="vertical-align: top; padding: 0; width: 46%;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 4px 16px 4px 0; font-size: 14px; font-weight: 700; color: #0f172a; text-align: right; width: 55%;">Receipt #</td>
+                    <td style="padding: 4px 0; font-size: 14px; color: #1e293b; text-align: right; width: 45%;">${escapeHtml(data.receiptNo || "-")}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 4px 16px 4px 0; font-size: 14px; font-weight: 700; color: #0f172a; text-align: right;">Receipt Date</td>
+                    <td style="padding: 4px 0; font-size: 14px; color: #1e293b; text-align: right;">${formatDisplayDate(data.receiptDate)}</td>
+                  </tr>
+                  ${paymentMetaHtml}
+                  ${refMetaHtml}
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Jadual Item Bayaran -->
+          <table style="width: 100%; border-collapse: collapse; margin-top: 24px;">
+            <thead>
+              <tr>
+                <th style="background-color: #f1f5f9; color: #0f172a; font-size: 13px; font-weight: 700; letter-spacing: 0.7px; padding: 12px 16px; border: 1px solid #cbd5e1; text-align: center; width: 72%;">
+                  DESCRIPTION
+                </th>
+                <th style="background-color: #f1f5f9; color: #0f172a; font-size: 13px; font-weight: 700; letter-spacing: 0.7px; padding: 12px 16px; border: 1px solid #cbd5e1; text-align: center; width: 28%;">
+                  AMOUNT
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+              <tr>
+                <td style="border: none; padding: 14px 16px 14px 0; text-align: right; font-weight: 700; font-size: 15px; color: #0f172a;">
+                  TOTAL
+                </td>
+                <td style="background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 14px 16px; text-align: right; font-weight: 700; font-size: 16px; color: #0f172a; font-variant-numeric: tabular-nums;">
+                  RM ${formatCurrency(total)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Cop PAID -->
+          ${
+            isPaid
+              ? `<div style="margin-top: 56px; text-align: center;">
+                   <span class="paid-stamp">PAID</span>
+                 </div>`
+              : ""
+          }
+        </div>
+
+        <!-- Pengaki Resit -->
+        <div style="margin-top: auto; padding-top: 18px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;">
+          <div style="font-size: 12.5px; color: #475569; line-height: 1.5;">
+            <div style="font-weight: 700; color: #0f172a; margin-bottom: 3px;">Terms &amp; Conditions</div>
+            <div style="white-space: pre-line;">${escapeHtml(data.terms || "Payment is due within 15 days")}</div>
+          </div>
+          <div style="font-size: 11px; color: #94a3b8; text-align: right; font-family: monospace;">
+            Ref: ${escapeHtml(txId)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderLivePreview() {
+      const previewEl = document.getElementById("live-receipt-preview");
+      const badgeEl = document.getElementById("preview-tx-id-badge");
+      if (!previewEl) return;
+
+      const txId = editingTransactionId || generateTransactionId(formState.receiptDate, formState.receiptNo);
+      if (badgeEl) badgeEl.textContent = `Ref: ${txId}`;
+
+      previewEl.innerHTML = buildReceiptHTML({
+        ...formState,
+        id: txId,
+        status: formState.isPaid ? "PAID" : "PENDING"
+      });
+
+      scalePreviewToFit();
+    }
+
+    function scalePreviewToFit() {
+      const viewport = document.getElementById("preview-viewport");
+      const scaler = document.getElementById("preview-scaler");
+      const sheet = document.getElementById("live-receipt-preview");
+      if (!viewport || !scaler) return;
+
+      const availableWidth = viewport.clientWidth;
+      if (availableWidth <= 0) return;
+
+      const receiptWidth = 794;
+      const receiptHeight = Math.max(1122, sheet ? sheet.scrollHeight : 1122);
+      const scale = Math.min(1, availableWidth / receiptWidth);
+      const offsetX = Math.max(0, (availableWidth - receiptWidth * scale) / 2);
+
+      scaler.style.transform = `translate3d(${offsetX}px, 0, 0) scale(${scale})`;
+      viewport.style.height = `${Math.ceil(receiptHeight * scale)}px`;
+    }
+
+    // =========================================================================
+    // 9. SIMPAN TRANSAKSI (FIRESTORE TRANSACTION ATOMIK) + PDF + CETAK
+    // =========================================================================
+    async function saveCurrentFormTransaction() {
+      if (!currentUser || !db) {
+        showToast("Sesi tidak sah. Sila log masuk semula.", "error");
+        return null;
+      }
+
+      const landlordName = formState.landlordName.trim();
+      const tenantName = formState.tenantName.trim();
+
+      if (!landlordName || !tenantName) {
+        showToast("Sila isi Nama Tuan Rumah dan Nama Penyewa terlebih dahulu.", "error");
+        return null;
+      }
+
+      const cleanedItems = formState.items
+        .map((it) => ({
+          description: String(it.description || "").trim() || "SEWA BULANAN",
+          amount: Math.max(0, parseFloat(it.amount) || 0)
+        }))
+        .filter((it) => it.description.length > 0);
+
+      if (cleanedItems.length === 0) {
+        showToast("Sila masukkan sekurang-kurangnya satu item bayaran.", "error");
+        return null;
+      }
+
+      const total = cleanedItems.reduce((sum, it) => sum + it.amount, 0);
+      const receiptDate = formState.receiptDate || getTodayISO();
+
+      try {
+        if (editingTransactionId) {
+          // Kemas kini transaksi sedia ada (kekalkan nombor resit asal)
+          const existing = transactions.find((t) => t.id === editingTransactionId);
+          const updatedRecord = {
+            id: editingTransactionId,
+            createdAt: existing?.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            updatedBy: currentUserEmail,
+            receiptNo: formState.receiptNo,
+            receiptDate,
+            landlordName,
+            landlordAddress: formState.landlordAddress.trim(),
+            tenantName,
+            items: cleanedItems,
+            total,
+            paymentMethod: formState.paymentMethod,
+            referenceNo: formState.referenceNo.trim(),
+            status: formState.isPaid ? "PAID" : "PENDING",
+            terms: formState.terms.trim() || "Payment is due within 15 days"
+          };
+
+          await setDoc(getPublicDoc("transactions", editingTransactionId), updatedRecord);
+          showToast(`Transaksi #${updatedRecord.receiptNo} berjaya dikemas kini.`);
+          return updatedRecord;
+        } else {
+          // Resit baharu: naikkan pembilang settings/counter secara atomik
+          const counterRef = getPublicDoc("settings", "counter");
+          const savedRecord = await runTransaction(db, async (trx) => {
+            const cSnap = await trx.get(counterRef);
+            const currentLast = cSnap.exists()
+              ? parseInt(cSnap.data().lastReceiptNumber, 10) || 192
+              : 192;
+            const newReceiptNoNum = currentLast + 1;
+            const newReceiptNoStr = String(newReceiptNoNum);
+            const newTxId = generateTransactionId(receiptDate, newReceiptNoStr);
+
+            const record = {
+              id: newTxId,
+              createdAt: new Date().toISOString(),
+              createdBy: currentUserEmail,
+              receiptNo: newReceiptNoStr,
+              receiptDate,
+              landlordName,
+              landlordAddress: formState.landlordAddress.trim(),
+              tenantName,
+              items: cleanedItems,
+              total,
+              paymentMethod: formState.paymentMethod,
+              referenceNo: formState.referenceNo.trim(),
+              status: formState.isPaid ? "PAID" : "PENDING",
+              terms: formState.terms.trim() || "Payment is due within 15 days"
+            };
+
+            trx.set(counterRef, { lastReceiptNumber: newReceiptNoNum }, { merge: true });
+            trx.set(getPublicDoc("transactions", newTxId), record);
+            return record;
+          });
+
+          showToast(`Resit #${savedRecord.receiptNo} disimpan (RM ${formatCurrency(savedRecord.total)}).`);
+          return savedRecord;
+        }
+      } catch (err) {
+        console.error("Ralat menyimpan transaksi:", err);
+        showToast("Gagal menyimpan transaksi ke pangkalan data.", "error");
+        return null;
+      }
+    }
+
+    async function downloadReceiptPDF(record) {
+      if (typeof html2pdf === "undefined") {
+        showToast("Pustaka PDF gagal dimuatkan. Sila guna butang Cetak.", "error");
+        return;
+      }
+
+      const sandbox = document.getElementById("pdf-render-sandbox");
+      sandbox.innerHTML = `<div class="receipt-sheet">${buildReceiptHTML(record)}</div>`;
+      const targetEl = sandbox.firstElementChild;
+
+      const safeTenant = String(record.tenantName || "PENYEWA")
+        .split(/\s+/)[0]
+        .replace(/[^A-Za-z0-9]/g, "")
+        .toUpperCase();
+      const filename = `Resit_${record.receiptNo}_${safeTenant || "SEWA"}.pdf`;
+
+      const opt = {
+        margin: 0,
+        filename,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
+        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" }
+      };
+
+      try {
+        await html2pdf().set(opt).from(targetEl).save();
+      } catch (err) {
+        console.error("Ralat jana PDF:", err);
+        showToast("Gagal memuat turun PDF. Sila cuba butang Cetak & pilih Save as PDF.", "error");
+      } finally {
+        sandbox.innerHTML = "";
+      }
+    }
+
+    function printReceiptRecord(record) {
+      const printBox = document.getElementById("print-only-container");
+      printBox.innerHTML = `<div class="receipt-sheet">${buildReceiptHTML(record)}</div>`;
+      setTimeout(() => {
+        window.print();
+      }, 150);
+    }
+
+    function setActionButtonsDisabled(disabled) {
+      isSavingTransaction = disabled;
+      ["btn-pdf-and-save", "btn-print-and-save", "btn-save-only"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = disabled;
+      });
+    }
+
+    async function handleSaveAction(mode) {
+      if (isSavingTransaction) return;
+      setActionButtonsDisabled(true);
+
+      try {
+        const wasEditing = Boolean(editingTransactionId);
+        const saved = await saveCurrentFormTransaction();
+        if (!saved) return;
+
+        if (mode === "pdf") {
+          await downloadReceiptPDF(saved);
+        } else if (mode === "print") {
+          printReceiptRecord(saved);
+        }
+
+        // Selepas simpan resit baharu atau selesai suntingan, sediakan borang untuk no resit seterusnya
+        if (!wasEditing) {
+          formState.receiptNo = String(parseInt(saved.receiptNo, 10) + 1);
+          formState.referenceNo = "";
+          document.getElementById("input-receipt-no").value = formState.receiptNo;
+          document.getElementById("input-reference-no").value = "";
+          renderLivePreview();
+        } else {
+          resetCreateFormToNextReceipt();
+        }
+      } finally {
+        setActionButtonsDisabled(false);
+      }
+    }
+
+    // =========================================================================
+    // 10. PAPARAN LEJAR TRANSAKSI, PENJUMLAHAN AMAUN & EKSPORT CSV
+    // =========================================================================
+    function getFilteredTransactions() {
+      const q = (document.getElementById("filter-search").value || "").trim().toLowerCase();
+      const status = document.getElementById("filter-status").value;
+      const month = document.getElementById("filter-month").value; // YYYY-MM
+      const tenant = document.getElementById("filter-tenant").value;
+
+      return transactions.filter((tx) => {
+        if (status !== "ALL" && tx.status !== status) return false;
+        if (month && !(tx.receiptDate || "").startsWith(month)) return false;
+        if (tenant !== "ALL" && tx.tenantName !== tenant) return false;
+
+        if (q) {
+          const itemText = (tx.items || []).map((i) => i.description).join(" ").toLowerCase();
+          const hay = `${tx.id} ${tx.receiptNo} ${tx.tenantName} ${tx.landlordName} ${tx.paymentMethod} ${tx.referenceNo} ${itemText}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
+    function renderTransactionsUI() {
+      // 1. Statistik Keseluruhan & Bar Atas
+      let grandTotal = 0;
+      let paidTotal = 0;
+      let paidCount = 0;
+      let pendingTotal = 0;
+      let pendingCount = 0;
+      let currentMonthTotal = 0;
+
+      const currentYM = getTodayISO().slice(0, 7);
+      const tenantMap = new Map();
+
+      transactions.forEach((tx) => {
+        const amt = parseFloat(tx.total) || 0;
+        grandTotal += amt;
+
+        if (tx.status === "PAID") {
+          paidTotal += amt;
+          paidCount += 1;
+        } else {
+          pendingTotal += amt;
+          pendingCount += 1;
+        }
+
+        if ((tx.receiptDate || "").startsWith(currentYM)) {
+          currentMonthTotal += amt;
+        }
+
+        const key = tx.tenantName || "Lain-lain";
+        if (!tenantMap.has(key)) {
+          tenantMap.set(key, {
+            tenantName: key,
+            landlordName: tx.landlordName || "-",
+            count: 0,
+            total: 0,
+            paid: 0
+          });
+        }
+        const entry = tenantMap.get(key);
+        entry.count += 1;
+        entry.total += amt;
+        if (tx.status === "PAID") entry.paid += amt;
+      });
+
+      document.getElementById("nav-tx-count").textContent = transactions.length;
+      document.getElementById("top-total-rent").textContent = `RM ${formatCurrency(grandTotal)}`;
+      document.getElementById("top-total-count").textContent = transactions.length;
+
+      document.getElementById("stat-grand-total").textContent = `RM ${formatCurrency(grandTotal)}`;
+      document.getElementById("stat-paid-amount").textContent = `RM ${formatCurrency(paidTotal)}`;
+      document.getElementById("stat-paid-count").textContent = `${paidCount} resit berbayar`;
+      document.getElementById("stat-pending-amount").textContent = `RM ${formatCurrency(pendingTotal)}`;
+      document.getElementById("stat-pending-count").textContent = `${pendingCount} resit tertunggak`;
+      document.getElementById("stat-current-month-amount").textContent = `RM ${formatCurrency(currentMonthTotal)}`;
+      document.getElementById("stat-tx-count").textContent = transactions.length;
+
+      // 2. Ringkasan Mengikut Penyewa
+      const tenantList = Array.from(tenantMap.values()).sort((a, b) => b.total - a.total);
+      document.getElementById("tenant-summary-total-badge").textContent = `${tenantList.length} Penyewa`;
+      const summaryGrid = document.getElementById("tenant-summary-grid");
+
+      if (tenantList.length === 0) {
+        summaryGrid.innerHTML = `<p class="text-xs text-slate-400 col-span-full py-2">Belum ada rekod penyewa.</p>`;
+      } else {
+        summaryGrid.innerHTML = tenantList
+          .map(
+            (t) => `
+            <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 flex flex-col justify-between gap-2">
+              <div>
+                <p class="text-xs font-extrabold text-slate-900 truncate">${escapeHtml(t.tenantName)}</p>
+                <p class="text-[11px] text-slate-500 truncate">${escapeHtml(t.landlordName)}</p>
+              </div>
+              <div class="flex items-end justify-between border-t border-slate-200/70 pt-2">
+                <span class="text-[11px] font-semibold text-slate-600">${t.count} resit</span>
+                <div class="text-right">
+                  <p class="text-sm font-extrabold text-emerald-700">RM ${formatCurrency(t.total)}</p>
+                </div>
+              </div>
+            </div>
+          `
+          )
+          .join("");
+      }
+
+      // 3. Kemas kini dropdown penapis penyewa (tanpa hilang pilihan semasa)
+      const tenantSelect = document.getElementById("filter-tenant");
+      const currentTenantVal = tenantSelect.value;
+      tenantSelect.innerHTML = `<option value="ALL">Semua Penyewa</option>`;
+      tenantList.forEach((t) => {
+        const opt = document.createElement("option");
+        opt.value = t.tenantName;
+        opt.textContent = t.tenantName;
+        tenantSelect.appendChild(opt);
+      });
+      if (Array.from(tenantSelect.options).some((o) => o.value === currentTenantVal)) {
+        tenantSelect.value = currentTenantVal;
+      }
+
+      // 4. Senarai Ditapis (Jadual Desktop & Kad Mudah Alih)
+      const filtered = getFilteredTransactions();
+      const filteredTotal = filtered.reduce((sum, tx) => sum + (parseFloat(tx.total) || 0), 0);
+
+      document.getElementById("filter-summary-text").textContent =
+        `Memaparkan ${filtered.length} daripada ${transactions.length} rekod transaksi`;
+      document.getElementById("filter-total-text").textContent =
+        `JUMLAH MENGIKUT TAPISAN: RM ${formatCurrency(filteredTotal)}`;
+      document.getElementById("tfoot-filtered-count").textContent = filtered.length;
+      document.getElementById("tfoot-filtered-total").textContent = `RM ${formatCurrency(filteredTotal)}`;
+      document.getElementById("mobile-filtered-count").textContent = filtered.length;
+      document.getElementById("mobile-filtered-total").textContent = `RM ${formatCurrency(filteredTotal)}`;
+
+      const tbody = document.getElementById("tx-table-body");
+      const cardsBox = document.getElementById("tx-cards-container");
+      const emptyBox = document.getElementById("tx-empty-state");
+      const tfoot = document.getElementById("tx-table-foot");
+      const mobileFoot = document.getElementById("tx-mobile-foot");
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = "";
+        cardsBox.innerHTML = "";
+        emptyBox.classList.remove("hidden");
+        tfoot.classList.add("hidden");
+        mobileFoot.classList.add("hidden");
+        return;
+      }
+
+      emptyBox.classList.add("hidden");
+      tfoot.classList.remove("hidden");
+      mobileFoot.classList.remove("hidden");
+
+      tbody.innerHTML = filtered
+        .map((tx) => {
+          const isPaid = tx.status === "PAID";
+          const desc = (tx.items || []).map((i) => i.description).join(", ");
+          return `
+            <tr class="hover:bg-slate-50/90 transition-colors">
+              <td class="py-3.5 px-4 align-top">
+                <p class="font-extrabold text-slate-900">#${escapeHtml(tx.receiptNo)}</p>
+                <p class="text-[11px] font-mono text-slate-400">${escapeHtml(tx.id)}</p>
+              </td>
+              <td class="py-3.5 px-4 align-top whitespace-nowrap text-slate-700 font-medium">
+                ${formatDisplayDate(tx.receiptDate)}
+              </td>
+              <td class="py-3.5 px-4 align-top">
+                <p class="font-bold text-slate-900 text-xs sm:text-sm">${escapeHtml(tx.tenantName)}</p>
+                <p class="text-[11px] text-slate-500">${escapeHtml(tx.landlordName)}</p>
+              </td>
+              <td class="py-3.5 px-4 align-top">
+                <p class="text-xs font-semibold text-slate-800">${escapeHtml(desc || "-")}</p>
+                <p class="text-[11px] text-slate-500 mt-0.5">${escapeHtml(tx.paymentMethod || "-")}${tx.referenceNo ? ` • ${escapeHtml(tx.referenceNo)}` : ""}</p>
+              </td>
+              <td class="py-3.5 px-4 align-top text-right whitespace-nowrap font-extrabold text-slate-900">
+                RM ${formatCurrency(tx.total)}
+              </td>
+              <td class="py-3.5 px-4 align-top text-center">
+                <button type="button" data-action="toggle-status" data-id="${escapeHtml(tx.id)}"
+                  class="tx-action-btn inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors ${
+                    isPaid
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                      : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                  }">
+                  ${isPaid ? "PAID" : "BELUM BAYAR"}
+                </button>
+              </td>
+              <td class="py-3.5 px-4 align-top text-right whitespace-nowrap">
+                <div class="inline-flex items-center gap-1">
+                  <button type="button" data-action="pdf" data-id="${escapeHtml(tx.id)}" class="tx-action-btn px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold">PDF</button>
+                  <button type="button" data-action="duplicate" data-id="${escapeHtml(tx.id)}" class="tx-action-btn px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold" title="Salin untuk bulan depan">Bulan Depan</button>
+                  <button type="button" data-action="edit" data-id="${escapeHtml(tx.id)}" class="tx-action-btn px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold">Sunting</button>
+                  <button type="button" data-action="delete" data-id="${escapeHtml(tx.id)}" class="tx-action-btn px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold">Padam</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      cardsBox.innerHTML = filtered
+        .map((tx) => {
+          const isPaid = tx.status === "PAID";
+          const desc = (tx.items || []).map((i) => i.description).join(", ");
+          return `
+            <div class="p-4 space-y-3">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-extrabold text-slate-900">Resit #${escapeHtml(tx.receiptNo)}</span>
+                    <button type="button" data-action="toggle-status" data-id="${escapeHtml(tx.id)}"
+                      class="tx-action-btn px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                        isPaid ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
+                      }">
+                      ${isPaid ? "PAID" : "BELUM BAYAR"}
+                    </button>
+                  </div>
+                  <p class="text-[11px] font-mono text-slate-400 mt-0.5">${escapeHtml(tx.id)} • ${formatDisplayDate(tx.receiptDate)}</p>
+                </div>
+                <p class="text-base font-extrabold text-slate-900">RM ${formatCurrency(tx.total)}</p>
+              </div>
+              <div class="text-xs space-y-0.5">
+                <p class="font-bold text-slate-800">${escapeHtml(tx.tenantName)}</p>
+                <p class="text-slate-500">${escapeHtml(desc || "-")}</p>
+                <p class="text-[11px] text-slate-400">${escapeHtml(tx.paymentMethod || "-")}${tx.referenceNo ? ` • ${escapeHtml(tx.referenceNo)}` : ""}</p>
+              </div>
+              <div class="flex flex-wrap gap-1.5 pt-1">
+                <button type="button" data-action="pdf" data-id="${escapeHtml(tx.id)}" class="tx-action-btn flex-1 py-2 px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold">PDF</button>
+                <button type="button" data-action="duplicate" data-id="${escapeHtml(tx.id)}" class="tx-action-btn flex-1 py-2 px-3 rounded-lg bg-blue-50 text-blue-700 text-xs font-bold">Bulan Depan</button>
+                <button type="button" data-action="edit" data-id="${escapeHtml(tx.id)}" class="tx-action-btn py-2 px-3 rounded-lg bg-slate-100 text-slate-700 text-xs font-bold">Sunting</button>
+                <button type="button" data-action="delete" data-id="${escapeHtml(tx.id)}" class="tx-action-btn py-2 px-3 rounded-lg bg-rose-50 text-rose-700 text-xs font-bold">Padam</button>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    async function handleTransactionAction(action, txId) {
+      const tx = transactions.find((t) => t.id === txId);
+      if (!tx) return;
+
+      if (action === "pdf") {
+        showToast(`Menjana PDF untuk Resit #${tx.receiptNo}...`, "info");
+        await downloadReceiptPDF(tx);
+      } else if (action === "toggle-status") {
+        const nextStatus = tx.status === "PAID" ? "PENDING" : "PAID";
+        try {
+          await updateDoc(getPublicDoc("transactions", tx.id), {
+            status: nextStatus,
+            updatedAt: new Date().toISOString()
+          });
+          showToast(`Status Resit #${tx.receiptNo} ditukar kepada ${nextStatus === "PAID" ? "PAID" : "BELUM BAYAR"}.`);
+        } catch (err) {
+          console.error(err);
+          showToast("Gagal menukar status.", "error");
+        }
+      } else if (action === "edit") {
+        editingTransactionId = tx.id;
+        formState = {
+          receiptNo: tx.receiptNo,
+          receiptDate: tx.receiptDate,
+          paymentMethod: tx.paymentMethod || "Pemindahan Bank",
+          referenceNo: tx.referenceNo || "",
+          landlordName: tx.landlordName,
+          landlordAddress: tx.landlordAddress,
+          tenantName: tx.tenantName,
+          items: (tx.items || []).map((it) => ({
+            description: it.description,
+            amount: Number(it.amount || 0).toFixed(2)
+          })),
+          isPaid: tx.status === "PAID",
+          terms: tx.terms || "Payment is due within 15 days"
+        };
+
+        document.getElementById("editing-receipt-no").textContent = `#${tx.receiptNo}`;
+        document.getElementById("editing-tx-id").textContent = tx.id;
+        document.getElementById("editing-banner").classList.remove("hidden");
+        document.getElementById("btn-save-only-text").textContent = "Kemas Kini Transaksi";
+        document.getElementById("btn-pdf-label").textContent = "Jana PDF & Kemas Kini";
+
+        syncFormInputsFromState();
+        renderItemRows();
+        renderLivePreview();
+        switchTab("create");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (action === "duplicate") {
+        editingTransactionId = null;
+        document.getElementById("editing-banner").classList.add("hidden");
+        document.getElementById("btn-save-only-text").textContent = "Simpan Transaksi Sahaja";
+        document.getElementById("btn-pdf-label").textContent = "Jana PDF & Simpan Transaksi";
+
+        formState = {
+          receiptNo: String(lastReceiptNumber + 1),
+          receiptDate: getTodayISO(),
+          paymentMethod: tx.paymentMethod || "Pemindahan Bank",
+          referenceNo: "",
+          landlordName: tx.landlordName,
+          landlordAddress: tx.landlordAddress,
+          tenantName: tx.tenantName,
+          items: (tx.items || []).map((it) => ({
+            description: getNextMonthDesc(it.description),
+            amount: Number(it.amount || 0).toFixed(2)
+          })),
+          isPaid: true,
+          terms: tx.terms || "Payment is due within 15 days"
+        };
+
+        syncFormInputsFromState();
+        renderItemRows();
+        renderLivePreview();
+        switchTab("create");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        showToast(`Disalin ke Resit baharu #${formState.receiptNo} untuk bulan berikutnya.`, "info");
+      } else if (action === "delete") {
+        openConfirmModal(
+          "Padam Rekod Transaksi?",
+          `Adakah anda pasti mahu memadam Resit #${tx.receiptNo} (${tx.tenantName})? Nombor resit seterusnya tetap kekal berturutan.`,
+          async () => {
+            try {
+              await deleteDoc(getPublicDoc("transactions", tx.id));
+              showToast(`Resit #${tx.receiptNo} telah dipadam.`);
+            } catch (err) {
+              console.error(err);
+              showToast("Gagal memadam transaksi.", "error");
+            }
+          }
+        );
+      }
+    }
+
+    function exportFilteredCSV() {
+      const filtered = getFilteredTransactions();
+      if (filtered.length === 0) {
+        showToast("Tiada rekod untuk dieksport.", "error");
+        return;
+      }
+
+      const headers = [
+        "ID Transaksi",
+        "No. Resit",
+        "Tarikh Resit",
+        "Tuan Rumah",
+        "Penyewa",
+        "Keterangan",
+        "Kaedah Bayaran",
+        "No. Rujukan",
+        "Status",
+        "Amaun (RM)"
+      ];
+
+      const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      let totalSum = 0;
+
+      const rows = filtered.map((tx) => {
+        const amt = parseFloat(tx.total) || 0;
+        totalSum += amt;
+        const desc = (tx.items || []).map((i) => i.description).join(" | ");
+        return [
+          tx.id,
+          tx.receiptNo,
+          formatDisplayDate(tx.receiptDate),
+          tx.landlordName,
+          tx.tenantName,
+          desc,
+          tx.paymentMethod || "",
+          tx.referenceNo || "",
+          tx.status,
+          amt.toFixed(2)
+        ]
+          .map(csvEscape)
+          .join(",");
+      });
+
+      rows.push(["", "", "", "", "", "", "", "", "JUMLAH KESELURUHAN", totalSum.toFixed(2)].map(csvEscape).join(","));
+
+      const csvContent = "\uFEFF" + [headers.map(csvEscape).join(","), ...rows].join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Rekod_Transaksi_Sewa_${getTodayISO()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showToast(`Berjaya eksport ${filtered.length} rekod transaksi ke CSV.`);
+    }
+
+    // =========================================================================
+    // 11. PENGURUSAN PROFIL PENYEWA / RUMAH (TAB 3)
+    // =========================================================================
+    function renderProfileSelect() {
+      const select = document.getElementById("profile-select");
+      const prev = select.value;
+      select.innerHTML = `<option value="">-- Pilih Profil Tuan Rumah &amp; Penyewa --</option>`;
+      profiles.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = `${p.tenantName} — RM ${formatCurrency(p.monthlyRent)}`;
+        select.appendChild(opt);
+      });
+      if (profiles.some((p) => p.id === prev)) {
+        select.value = prev;
+      }
+    }
+
+    function renderProfilesList() {
+      const container = document.getElementById("profiles-list-container");
+      document.getElementById("profiles-count-badge").textContent = `${profiles.length} Profil`;
+
+      if (profiles.length === 0) {
+        container.innerHTML = `
+          <div class="bg-white rounded-2xl border border-slate-200 p-8 text-center text-sm text-slate-500">
+            Tiada profil disimpan. Tambah profil baharu di sebelah kiri.
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = profiles
+        .map(
+          (p) => `
+          <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p class="text-sm font-extrabold text-slate-900">${escapeHtml(p.tenantName)}</p>
+                <p class="text-xs font-semibold text-slate-600 mt-0.5">${escapeHtml(p.landlordName)}</p>
+                <p class="text-xs text-slate-500 mt-1">${escapeHtml(p.landlordAddress)}</p>
+              </div>
+              <span class="px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-extrabold">
+                RM ${formatCurrency(p.monthlyRent)} / bln
+              </span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+              <button type="button" data-prof-action="use" data-id="${escapeHtml(p.id)}"
+                class="prof-action-btn px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors">
+                Guna Profil Ini
+              </button>
+              <button type="button" data-prof-action="edit" data-id="${escapeHtml(p.id)}"
+                class="prof-action-btn px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors">
+                Sunting
+              </button>
+              <button type="button" data-prof-action="delete" data-id="${escapeHtml(p.id)}"
+                class="prof-action-btn px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-colors">
+                Padam
+              </button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+    }
+
+    function resetProfileForm() {
+      editingProfileId = null;
+      document.getElementById("profile-form").reset();
+      document.getElementById("prof-terms").value = "Payment is due within 15 days";
+      document.getElementById("profile-form-title").textContent = "Tambah Profil Baharu";
+      document.getElementById("btn-save-profile-text").textContent = "Simpan Profil";
+      document.getElementById("btn-cancel-profile-edit").classList.add("hidden");
+    }
+
+    async function handleProfileFormSubmit(e) {
+      e.preventDefault();
+      if (!currentUser || !db) return;
+
+      const id = editingProfileId || `PROF-${Date.now()}`;
+      const record = {
+        id,
+        landlordName: document.getElementById("prof-landlord").value.trim(),
+        landlordAddress: document.getElementById("prof-address").value.trim(),
+        tenantName: document.getElementById("prof-tenant").value.trim(),
+        monthlyRent: parseFloat(document.getElementById("prof-rent").value) || 0,
+        terms: document.getElementById("prof-terms").value.trim() || "Payment is due within 15 days"
+      };
+
+      try {
+        await setDoc(getPublicDoc("profiles", id), record);
+        showToast(editingProfileId ? "Profil berjaya dikemas kini." : "Profil baharu berjaya disimpan.");
+        resetProfileForm();
+      } catch (err) {
+        console.error(err);
+        showToast("Gagal menyimpan profil.", "error");
+      }
+    }
+
+    // =========================================================================
+    // 12. PENGURUSAN AKSES PENGGUNA / WHITELIST (TAB 4 - ADMIN SAHAJA)
+    // =========================================================================
+    function renderAccessList() {
+      const container = document.getElementById("access-list-container");
+      document.getElementById("access-count-badge").textContent = `${allowedUsers.length} Pengguna`;
+
+      if (allowedUsers.length === 0) {
+        container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">Tiada pengguna dalam senarai.</div>`;
+        return;
+      }
+
+      container.innerHTML = allowedUsers
+        .map((u) => {
+          const isMe = (u.email || "").trim().toLowerCase() === currentUserEmail;
+          const isAdmin = u.role === "Admin";
+          return `
+            <div class="p-4 flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <p class="text-sm font-bold text-slate-900 truncate">${escapeHtml(u.email)}</p>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                    isAdmin ? "bg-emerald-100 text-emerald-800" : "bg-blue-100 text-blue-800"
+                  }">
+                    ${escapeHtml(u.role)}
+                  </span>
+                  ${isMe ? `<span class="text-[10px] font-bold text-slate-400">(Anda)</span>` : ""}
+                </div>
+                <p class="text-[11px] text-slate-400 mt-0.5">Ditambah oleh: ${escapeHtml(u.addedBy || "-")}</p>
+              </div>
+              ${
+                !isMe
+                  ? `<button type="button" data-remove-email-id="${escapeHtml(u.id)}" data-remove-email="${escapeHtml(u.email)}"
+                      class="btn-remove-access px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex-shrink-0 transition-colors">
+                      Buang Akses
+                    </button>`
+                  : `<span class="text-[11px] text-slate-400 font-semibold flex-shrink-0">Aktif</span>`
+              }
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    async function handleAddAccessSubmit(e) {
+      e.preventDefault();
+      if (currentUserRole !== "Admin" || !db) {
+        showToast("Hanya Admin dibenarkan menambah akses.", "error");
+        return;
+      }
+
+      const email = document.getElementById("access-email").value.trim().toLowerCase();
+      const role = document.getElementById("access-role").value;
+      if (!email) return;
+
+      const docId = sanitizeEmailDocId(email);
+      try {
+        await setDoc(getPublicDoc("allowed_users", docId), {
+          email,
+          role,
+          addedAt: new Date().toISOString(),
+          addedBy: currentUserEmail
+        });
+        document.getElementById("access-form").reset();
+        showToast(`Emel ${email} (${role}) telah ditambah ke senarai akses.`);
+      } catch (err) {
+        console.error(err);
+        showToast("Gagal menambah emel akses.", "error");
+      }
+    }
+
+    // =========================================================================
+    // 13. PENDAFTARAN SEMUA EVENT LISTENER & PERMULAAN APLIKASI
+    // =========================================================================
+    function bindEvents() {
+      // Log masuk & log keluar
+      document.getElementById("btn-google-signin").addEventListener("click", handleGoogleSignIn);
+      document.getElementById("btn-denied-logout").addEventListener("click", handleLogout);
+      document.querySelectorAll(".btn-logout-action").forEach((btn) => {
+        btn.addEventListener("click", handleLogout);
+      });
+
+      // Navigasi tab
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+      });
+
+      // Dropdown auto-isi profil
+      document.getElementById("profile-select").addEventListener("change", (e) => {
+        const prof = profiles.find((p) => p.id === e.target.value);
+        if (!prof) return;
+        formState.landlordName = prof.landlordName;
+        formState.landlordAddress = prof.landlordAddress;
+        formState.tenantName = prof.tenantName;
+        formState.terms = prof.terms || "Payment is due within 15 days";
+        formState.items = [
+          {
+            description: getCurrentMonthDesc(),
+            amount: Number(prof.monthlyRent || 0).toFixed(2)
+          }
+        ];
+        syncFormInputsFromState();
+        renderItemRows();
+        renderLivePreview();
+      });
+
+      // Input borang resit -> kemas kini pratonton langsung
+      const bindField = (id, key) => {
+        document.getElementById(id).addEventListener("input", (e) => {
+          formState[key] = e.target.value;
+          renderLivePreview();
+        });
+      };
+      bindField("input-receipt-date", "receiptDate");
+      bindField("input-payment-method", "paymentMethod");
+      bindField("input-reference-no", "referenceNo");
+      bindField("input-landlord-name", "landlordName");
+      bindField("input-landlord-address", "landlordAddress");
+      bindField("input-tenant-name", "tenantName");
+      bindField("input-terms", "terms");
+
+      document.getElementById("input-is-paid").addEventListener("change", (e) => {
+        formState.isPaid = e.target.checked;
+        const label = document.getElementById("paid-status-label");
+        label.textContent = formState.isPaid ? "PAID" : "BELUM BAYAR";
+        label.className = formState.isPaid ? "text-emerald-700" : "text-amber-600";
+        renderLivePreview();
+      });
+
+      document.getElementById("btn-add-item").addEventListener("click", () => {
+        formState.items.push({ description: "", amount: "0.00" });
+        renderItemRows();
+        renderLivePreview();
+      });
+
+      document.getElementById("btn-cancel-edit").addEventListener("click", () => {
+        resetCreateFormToNextReceipt();
+        showToast("Mod suntingan dibatalkan.", "info");
+      });
+
+      // 3 butang simpan / PDF / cetak
+      document.getElementById("btn-pdf-and-save").addEventListener("click", () => handleSaveAction("pdf"));
+      document.getElementById("btn-print-and-save").addEventListener("click", () => handleSaveAction("print"));
+      document.getElementById("btn-save-only").addEventListener("click", () => handleSaveAction("save"));
+
+      // Penapis transaksi & eksport CSV
+      ["filter-search", "filter-status", "filter-month", "filter-tenant"].forEach((id) => {
+        document.getElementById(id).addEventListener("input", renderTransactionsUI);
+        document.getElementById(id).addEventListener("change", renderTransactionsUI);
+      });
+
+      document.getElementById("btn-reset-filters").addEventListener("click", () => {
+        document.getElementById("filter-search").value = "";
+        document.getElementById("filter-status").value = "ALL";
+        document.getElementById("filter-month").value = "";
+        document.getElementById("filter-tenant").value = "ALL";
+        renderTransactionsUI();
+      });
+
+      document.getElementById("btn-export-csv").addEventListener("click", exportFilteredCSV);
+
+      // Delegasi butang tindakan pada jadual & kad transaksi
+      document.getElementById("tab-transactions").addEventListener("click", (e) => {
+        const btn = e.target.closest(".tx-action-btn");
+        if (!btn) return;
+        handleTransactionAction(btn.dataset.action, btn.dataset.id);
+      });
+
+      // Profil form & senarai profil
+      document.getElementById("profile-form").addEventListener("submit", handleProfileFormSubmit);
+      document.getElementById("btn-cancel-profile-edit").addEventListener("click", resetProfileForm);
+
+      document.getElementById("profiles-list-container").addEventListener("click", (e) => {
+        const btn = e.target.closest(".prof-action-btn");
+        if (!btn) return;
+        const prof = profiles.find((p) => p.id === btn.dataset.id);
+        if (!prof) return;
+
+        const action = btn.dataset.profAction;
+        if (action === "use") {
+          resetCreateFormToNextReceipt(prof);
+          switchTab("create");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          showToast(`Profil ${prof.tenantName} dimuatkan ke borang resit.`, "info");
+        } else if (action === "edit") {
+          editingProfileId = prof.id;
+          document.getElementById("prof-landlord").value = prof.landlordName;
+          document.getElementById("prof-address").value = prof.landlordAddress;
+          document.getElementById("prof-tenant").value = prof.tenantName;
+          document.getElementById("prof-rent").value = Number(prof.monthlyRent || 0).toFixed(2);
+          document.getElementById("prof-terms").value = prof.terms || "Payment is due within 15 days";
+          document.getElementById("profile-form-title").textContent = "Sunting Profil";
+          document.getElementById("btn-save-profile-text").textContent = "Kemas Kini Profil";
+          document.getElementById("btn-cancel-profile-edit").classList.remove("hidden");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } else if (action === "delete") {
+          openConfirmModal(
+            "Padam Profil?",
+            `Adakah anda pasti mahu memadam profil ${prof.tenantName}? Rekod transaksi sedia ada tidak akan terjejas.`,
+            async () => {
+              try {
+                await deleteDoc(getPublicDoc("profiles", prof.id));
+                showToast("Profil telah dipadam.");
+              } catch (err) {
+                console.error(err);
+                showToast("Gagal memadam profil.", "error");
+              }
+            }
+          );
+        }
+      });
+
+      // Tab Urus Akses (Admin)
+      document.getElementById("access-form").addEventListener("submit", handleAddAccessSubmit);
+      document.getElementById("access-list-container").addEventListener("click", (e) => {
+        const btn = e.target.closest(".btn-remove-access");
+        if (!btn) return;
+        const docId = btn.dataset.removeEmailId;
+        const email = btn.dataset.removeEmail;
+        openConfirmModal(
+          "Buang Akses Pengguna?",
+          `Emel ${email} tidak lagi akan dibenarkan masuk ke sistem ini.`,
+          async () => {
+            try {
+              await deleteDoc(getPublicDoc("allowed_users", docId));
+              showToast(`Akses untuk ${email} telah dibuang.`);
+            } catch (err) {
+              console.error(err);
+              showToast("Gagal membuang akses.", "error");
+            }
+          }
+        );
+      });
+
+      // Modal pengesahan
+      document.getElementById("confirm-modal-cancel").addEventListener("click", closeConfirmModal);
+      document.getElementById("confirm-modal-ok").addEventListener("click", async () => {
+        const cb = confirmCallback;
+        closeConfirmModal();
+        if (typeof cb === "function") await cb();
+      });
+
+      // Skala pratonton resit apabila saiz skrin berubah
+      window.addEventListener("resize", scalePreviewToFit);
+      const pv = document.getElementById("preview-viewport");
+      if (pv && typeof ResizeObserver !== "undefined") {
+        new ResizeObserver(() => scalePreviewToFit()).observe(pv);
+      }
+    }
+
+    async function initApp() {
+      bindEvents();
+
+      if (!auth || !db) {
+        showAuthError("Gagal memulakan Firebase. Sila semak sambungan internet anda.");
+        showScreen("view-auth");
+        return;
+      }
+
+      // Jika persekitaran menyediakan token tersuai (pratonton)
+      if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
+        try {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } catch (err) {
+          console.error("Ralat signInWithCustomToken:", err);
+        }
+      }
+
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          showScreen("view-loading");
+          await verifyAccessAndBootstrap(user);
+        } else {
+          clearSubscriptions();
+          showScreen("view-auth");
+        }
+      });
+    }
+
+    initApp();
+  </script>
+</body>
+</html>
